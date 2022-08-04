@@ -1,0 +1,1742 @@
+---
+title: "**R** codes for the paper *Impact computations in the general spatial interaction model*"
+author: Thibault Laurent & Paula Margaretic & Christine Thomas-Agnan
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+    keep_tex: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document provides the **R** codes used to reproduce the results included in the paper *Impact computations in the general spatial interaction model*. The pdf version is available [here](supplementary.pdf).
+
+To cite this work, please use :
+
+Laurent T., Margaretic P. and Thomas-Agnan C. (2022). *Impact computations in the general spatial interaction model*, *$\color{red}{\text{TSE WP}}$*. 
+
+
+List of the required packages:
+```{r, message = F}
+library(colorspace)
+library(ggridges)
+library(ggstance)
+library(microbenchmark)
+library(sf)
+library(tidyverse)
+```
+
+
+# Simulated data
+
+We load the function *map_flows()* that allows to make flow map.
+
+```{r}
+source("codes/map_flows.R")
+```
+
+
+## Toy example 1
+
+We prepare the polygons:
+
+```{r, echo = T}
+index_o <- paste0("s", rep(1:8, each = 8))
+index_d <- paste0("s", rep(1:8, times = 8))
+
+s1 = st_polygon(list(rbind(c(0.5, 0.5), c(1.5, 0.5), 
+                           c(1.5, 1.5), c(0.5, 1.5), c(0.5, 0.5))))
+s2 = s1 + c(1, 0)
+s3 = s1 + c(2, 0)
+s4 = s1 + c(3, 0)
+s5 = s1 + c(4, 0)
+s6 = s1 + c(5, 0)
+s7 = s1 + c(6, 0)
+s8 = s1 + c(7, 0)
+
+my_poly = st_sfc(s1, s2, s3, s4, s5, s6, s7, s8)
+coords_xy <- st_coordinates(st_centroid(my_poly))
+# give row names to the coordinates
+site <- paste0("s", 1:8)
+rownames(coords_xy) <- site
+n <- length(my_poly)
+N <- n ^ 2
+long <- coords_xy[, 1]
+lat <- coords_xy[, 2]
+```
+
+We prepare the explanatory variables:
+```{r}
+# preparation of the x
+X <- data.frame(x = c(40, 30, 20, 10, 7, 10, 15, 25))
+rownames(X) <- site
+# distance between sites
+g <- as.vector(as.matrix(log(dist(cbind(long, lat)))))
+```
+
+
+We prepare the spatial weight matrix at the site level:
+```{r}
+# spatial weigh matrices
+w <- matrix(c(0, 1, 0, 0, 0, 0, 0, 0,
+                  0.5, 0, 0.5, 0, 0, 0, 0, 0,
+                  0, 0.5, 0, 0.5, 0, 0, 0, 0,
+                  0, 0, 0.5, 0, 0.5, 0, 0, 0,
+                  0, 0, 0, 0.5, 0, 0.5, 0, 0,
+                  0, 0, 0, 0, 0.5, 0, 0.5, 0,
+                  0, 0, 0, 0, 0, 0.5, 0, 0.5,
+                  0, 0, 0, 0, 0, 0, 1, 0), 
+                8, 8, byrow = T)
+dimnames(w) <- list(site, site)
+```
+
+We prepare the spatial weight matrices at the flows level:
+```{r}
+W_d <- kronecker(diag(n), w)
+W_o <- kronecker(w, diag(n))
+W_w <- kronecker(w, w)
+```
+
+Simulation of the dependent variable:
+```{r}
+# rho parameters
+rho_d <- 0.4
+rho_o <- 0.4
+rho_w <- -rho_d * rho_o
+rho <- c(rho_o, rho_d, rho_w)
+# parameters
+alpha <- 1
+beta_i <- 2
+beta_o <- 0.5
+beta_d <- 1
+gamma_od <- -0.5
+delta_o <- 0.1
+delta_d <- 0.3
+
+# explanatory variables
+x_o <- kronecker(as(X, "matrix"), rep(1, n))
+x_d <- kronecker(rep(1, n), as(X, "matrix"))
+x_i <- x_o * as.numeric(index_o == index_d)
+
+# Dependent variables
+Y_type_3 <- solve(diag(N) - rho_o * W_o - rho_d * W_d - rho_w * W_w, 
+      alpha + x_o * beta_o + x_d * beta_d + x_i * beta_i + 
+        as.numeric(W_o %*% x_o) * delta_o +
+        as.numeric(W_d %*% x_d) * delta_d +
+      gamma_od * g)
+
+Y_type_1 <- solve(diag(N) - rho_o * W_o - rho_d * W_d - rho_w * W_w, 
+      alpha + x_o * beta_o + as.numeric(W_o %*% x_o) * delta_o +
+      gamma_od * g)
+
+Y_type_2 <- solve(diag(N) - rho_o * W_o - rho_d * W_d - rho_w * W_w, 
+      alpha + x_d * beta_d + as.numeric(W_d %*% x_d) * delta_d +
+      gamma_od * g)
+```
+
+
+We plot the variable:
+```{r, fig.width = 10, fig.height = 4, echo = T}
+q4 <- colorspace::qualitative_hcl(8, palette = "Dark 3")
+#pdf("figures/toy_data_1.pdf", width = 7, height = 2)
+par(oma = c(0, 0, 0, 0), mar = c(0, 0, 1, 0))
+plot(my_poly, col = rgb(0.96, 0.96, 0.96), border = "white")
+map_flows(as.numeric(Y_type_3), index_o, index_d, coords_xy, 
+          q4 = q4, alpha.q = 0, label_s = T, maxlwd = 0.2, add = T)
+title("a)")
+# dev.off()
+```
+
+
+
+
+## Toy example 2
+
+```{r}
+o1 = st_polygon(list(rbind(c(0.5, 0.5), c(1.5, 0.5), 
+                           c(1.5, 1.5), c(0.5, 1.5), c(0.5, 0.5))))
+o2 = o1 + c(1, 0)
+o3 = o1 + c(2, 0)
+o4 = o1 + c(3, 0)
+od1 = o1 + c(1.5, -1)
+d1 = o1 + c(0.75, -2)
+d2 = o1 + c(2.25, -2)
+
+my_poly_2 = st_sfc(o1, o2, o3, o4, od1, d1, d2)
+
+coords_xy_2 <- st_coordinates(st_centroid(my_poly_2))
+# give row names to the coordinates
+site_o <- c("o1", "o2", "o3", "o4", "od1")
+site_d <- c("d1", "d2", "od1")
+site_2 <- union(site_o, site_d)
+rownames(coords_xy_2) <- site_2
+
+index_o_2 <- rep(site_o, each = 3) 
+index_d_2 <- rep(site_d, times = 5) 
+n_o <- 5
+n_d <- 3
+N_2 <- n_o * n_d
+```
+
+We prepare the spatial weight at the site levels: 
+```{r}
+# spatial weigh matrices
+ow <- matrix(c(0, 1, 0, 0, 0, 
+               1/2, 0, 0, 0, 1/2, 
+               0, 0, 0, 1/2, 1/2, 
+               0, 0, 1, 0, 0, 
+               0, 1/2, 1/2, 0, 0), 
+                n_o, n_o, byrow = T)
+dimnames(ow) <- list(site_o, site_o)
+dw <- matrix(c(0, 0, 1, 
+               0, 0, 1, 
+               0.5, 0.5, 0), 
+                n_d, n_d, byrow = T)
+dimnames(dw) <- list(site_d, site_d)
+```
+
+We prepare the spatial weight at the flows levels: 
+```{r}
+W_d_2 <- kronecker(diag(n_o), dw)
+W_o_2 <- kronecker(ow, diag(n_d))
+W_w_2 <- kronecker(ow, dw)
+```
+
+We prepare the explanatory variable:
+```{r}
+# x matrix
+OX <- data.frame(x = c(40, 20, 10, 7, 10))
+rownames(OX) <- site_o
+DX <- data.frame(x = c(15, 25, 10))
+rownames(DX) <- site_d
+
+# beta parameters
+beta_i <- 2
+beta_o <- 0.5
+beta_d <- 1
+delta_o <- 0.1
+delta_d <- 0.3
+```
+
+We simulate the spatial flows:
+```{r}
+# Computing the effects :
+x_o_2 <- kronecker(as(OX, "matrix"), rep(1, n_d))
+x_d_2 <- kronecker(rep(1, n_o), as(DX, "matrix"))
+x_i_2 <- x_o_2 * as.numeric(index_o_2 == index_d_2)
+
+g_2 <- st_distance(st_centroid(my_poly_2))
+dimnames(g_2) <- list(site_2, site_2)
+g_2 <- g_2[site_o, site_d]
+ 
+g_2 <- as.vector(t(g_2))
+g_2 <- ifelse(g_2 != 0, log(g_2), 0)  
+
+Y_full_2 <- solve(diag(N_2) - rho_o * W_o_2 - rho_d * W_d_2 - rho_w * W_w_2, 
+      x_o_2 * beta_o + x_d_2 * beta_d + x_i_2 * beta_i + 
+        as.numeric(W_o_2 %*% x_o_2) * delta_o +
+        as.numeric(W_d_2 %*% x_d_2) * delta_d + gamma_od * g_2)
+```
+
+We represent the flows: 
+
+```{r, fig.width = 10, fig.height = 4}
+q4 <- colorspace::qualitative_hcl(7, palette = "Dark 3")
+# pdf("figures/toy_data_2.pdf", width = 5, height = 4)
+par(oma = c(0, 0, 0, 0), mar = c(0, 0, 2, 0))
+plot(my_poly_2, border = "white")
+plot(my_poly_2[1:4], add = T, col = rgb(0.95, 0.95, 0.95), border = "white")
+plot(my_poly_2[5], add = T, col = rgb(0.95, 0.95, 0.95), border = "white")
+plot(my_poly_2[6:7], add = T, col = rgb(0.95, 0.95, 0.95), border = "white")
+map_flows(Y_full_2, index_o_2, index_d_2, coords_xy_2, 
+          q4 = q4, alpha.q = 0, label_s = T, maxlwd = 0.2, add = T)
+title("b)")
+# dev.off()
+```
+
+
+## Toy example 3
+
+```{r}
+od1_nc = st_polygon(list(rbind(c(0.5, 0.5), c(1.5, 0.5), 
+                           c(1.5, 1.5), c(0.5, 1.5), c(0.5, 0.5))))
+d1_nc = od1_nc + c(-1.5, 1.5)
+d2_nc = od1_nc + c(1.5, 1.5)
+d3_nc = od1_nc + c(-1.5, -1.5)
+d4_nc = od1_nc + c(1.5, -1.5)
+
+o1_nc = od1_nc + c(-4, 0)
+o2_nc = od1_nc + c(0, 4)
+o3_nc = od1_nc + c(0, -4)
+o4_nc = od1_nc + c(4, 0)
+
+my_poly_nc = st_sfc(o1_nc, o2_nc, o3_nc, o4_nc, od1_nc, d1_nc, d2_nc, d3_nc, d4_nc)
+
+coords_xy_nc <- st_coordinates(st_centroid(my_poly_nc))
+# give row names to the coordinates
+site_o_nc <- c("o1", "o2", "o3", "o4", "od1")
+site_d_nc <- c("d1", "d2", "d3", "d4", "od1")
+site_nc <- union(site_o_nc, site_d_nc)
+rownames(coords_xy_nc) <- site_nc
+
+n_o_nc <- 5
+n_d_nc <- 5
+
+# we prepare the full flows 
+index_o_nc <- rep(site_o_nc, each = n_d_nc) 
+index_d_nc <- rep(site_d_nc, times = n_o_nc) 
+
+# we drop the missing flows
+index_missing <- c(2, 4, 8, 9, 11, 12, 16, 18)
+  
+# size of the flows
+index_o_nc <- index_o_nc[-index_missing]
+index_d_nc <- index_d_nc[-index_missing]
+
+N_nc <- length(index_d_nc)
+```
+
+We prepare the spatial weight at the site levels: 
+```{r}
+# spatial weigh matrices
+ow_nc <- matrix(c(0, 1/3, 1/3, 0, 1/3, 
+               1/3, 0, 0, 1/3, 1/3, 
+               1/3, 0, 0, 1/3, 1/3, 
+               0, 1/3, 1/3, 0, 1/3, 
+               1/4, 1/4, 1/4, 1/4, 0), 
+                n_o_nc, n_o_nc, byrow = T)
+dimnames(ow_nc) <- list(site_o_nc, site_o_nc)
+dw_nc <- matrix(c(0, 1/3, 1/3, 0, 1/3, 
+               1/3, 0, 0, 1/3, 1/3, 
+               1/3, 0, 0, 1/3, 1/3, 
+               0, 1/3, 1/3, 0, 1/3, 
+               1/4, 1/4, 1/4, 1/4, 0), 
+                n_d_nc, n_d_nc, byrow = T)
+dimnames(dw_nc) <- list(site_d_nc, site_d_nc)
+```
+
+We prepare the spatial weight at the flows levels: 
+```{r}
+W_d_nc <- kronecker(diag(n_o_nc), dw_nc)
+W_d_nc <- W_d_nc[-index_missing, -index_missing]
+W_o_nc <- kronecker(ow_nc, diag(n_d_nc))
+W_o_nc <- W_o_nc[-index_missing, -index_missing]
+W_w_nc <- kronecker(ow_nc, dw_nc)
+W_w_nc <- W_w_nc[-index_missing, -index_missing]
+```
+
+We prepare the explanatory variable:
+```{r}
+# x matrix
+OX_nc <- data.frame(x = c(40, 20, 10, 7, 10))
+rownames(OX_nc) <- site_o_nc
+DX_nc <- data.frame(x = c(15, 25, 25, 15, 10))
+rownames(DX_nc) <- site_d_nc
+
+# beta parameters
+beta_i <- 2
+beta_o <- 0.5
+beta_d <- 1
+delta_o <- 0.1
+delta_d <- 0.3
+```
+
+We simulate the spatial flows:
+```{r}
+# Computing the effects :
+x_o_nc <- OX_nc[index_o_nc, ] 
+x_d_nc <- DX_nc[index_d_nc, ] 
+x_i_nc <- x_o_nc * as.numeric(index_o_nc == index_d_nc)
+
+g_nc <- st_distance(st_centroid(my_poly_nc))
+dimnames(g_nc) <- list(site_nc, site_nc)
+g_nc <- g_nc[cbind(index_o_nc, index_d_nc)]
+ 
+g_nc <- as.vector(t(g_nc))
+g_nc <- ifelse(g_nc != 0, log(g_nc), 0)  
+
+Y_full_nc <- solve(diag(N_nc) - rho_o * W_o_nc - rho_d * W_d_nc - rho_w * W_w_nc, 
+      x_o_nc * beta_o + x_d_nc * beta_d + x_i_nc * beta_i + 
+        as.numeric(W_o_nc %*% x_o_nc) * delta_o +
+        as.numeric(W_d_nc %*% x_d_nc) * delta_d + gamma_od * g_nc)
+```
+
+We represent the flows: 
+
+```{r, fig.width = 10, fig.height = 4}
+q4 <- colorspace::qualitative_hcl(9, palette = "Dark 3")
+# pdf("figures/toy_data_3.pdf", width = 5, height = 4)
+par(oma = c(0, 0, 0, 0), mar = c(0, 0, 2, 0))
+plot(my_poly_nc, border = "white")
+plot(my_poly_nc[1:4], add = T, col = rgb(0.95, 0.95, 0.95), border = "white")
+plot(my_poly_nc[5], add = T, col = rgb(0.95, 0.95, 0.95), border = "white")
+plot(my_poly_nc[6:9], add = T, col = rgb(0.95, 0.95, 0.95), border = "white")
+map_flows(Y_full_nc, index_o_nc, index_d_nc, coords_xy_nc, 
+          q4 = q4, alpha.q = 0, label_s = T, maxlwd = 0.2, add = T)
+title("c)")
+# dev.off()
+```
+
+# Our functions
+
+## Prediction: cartesian case (no log)
+
+The function *predict_gsim()* allows to compute formulas (18) and (19) in the cartesian case. It requires only the values of the (estimated) parameters, the spatial weight matrices $OW$ ($n_o\times n_o$) and $DW$ ($n_d\times n_d$) and the indices of the flows at origin and destination. Comparing to the previous function, it also requires the matrices of observations $OX$ and $DX$
+
+```{r}
+source("codes/predict_cartesian.R")
+source("codes/predict_non_cartesian.R")
+```
+
+In the cartesian case: 
+
+```{r, eval = F}
+predict_gsim(Z, rho, alpha = 0, omega_vec = rep(0, length(ind_o)),
+             OW, DW, OX, DX,
+             ind_o, ind_d) 
+```
+
+In the non cartesian case:
+```{r, eval = F}
+predict_gsim_nc(Z, rho, alpha = 0, omega_vec = rep(0, length(ind_o)),
+                W_o, W_d, W_w, OX, DX,
+                ind_o, ind_d)
+```
+
+
+**Input arguments:**
+
+* `Z`: a `data.frame` of size $p\times 5$, with $p$ being the number of variables and the 5 columns names must be `beta_o`, `beta_d`, `beta_i`, `delta_o`, `delta_d` and correspond to the values of the coefficients in model (2) or (3). Names of the variables are given as `row.names`
+
+* `rho`: a vector of size 3 with the values of `rho_o`, `rho_d`, `rho_w`
+
+* `alpha`: value of the intercept in model (2) or (3)
+
+* `omega_vec`: vector with the values of $G\times\omega$ (can be extended to more variables). Equals 0 by default
+
+* `OW`, `DW`: spatial weight matrices of size $n_o$ and $n_d$
+
+* `OX`, `DX`: the characteristic at origin sites and destination sites
+
+* `ind_o`, `ind_d`: indexes of the flows
+
+**Output arguments:**
+It returns a `vector` of size $N$ with the prediction $TC$ 
+
+
+### Example of use
+
+In the square case:
+
+```{r}
+coeff_x <- data.frame(row.names = "x", beta_o = 0.5, beta_d = 1, beta_i = 2, 
+                      delta_o = 0.1, delta_d = 0.3)
+coeff_x_no_beta_i <- data.frame(row.names = "x", beta_o = 0.5, beta_d = 1, beta_i = 0, 
+                                delta_o = 0.1, delta_d = 0.3)
+# cartesian case
+pred_sq <- predict_gsim(coeff_x, rho, alpha = alpha, omega_vec = gamma_od * g,
+                          OW = w, DW = w, OX = X, DX = X,
+                          ind_o = index_o, ind_d = index_d)
+# non cartesian case
+pred_sq_2 <- predict_gsim_nc(coeff_x, rho, alpha = alpha, 
+                             omega_vec = gamma_od * g,
+                             W_o, W_d, W_w, OX = X, DX = X,
+                          ind_o = index_o, ind_d = index_d)
+
+# comparaison
+head(cbind(pred_sq, pred_sq_2))
+```
+
+Rectangular case: 
+```{r}
+# cartesian case
+pred_rec <- predict_gsim(coeff_x, rho, alpha = alpha, omega_vec = gamma_od * g_2,
+                          OW = ow, DW = dw, OX = OX, DX = DX,
+                          ind_o = index_o_2, ind_d = index_d_2)
+# non cartesian case
+pred_rec_2 <- predict_gsim_nc(coeff_x, rho, alpha = alpha, 
+                             omega_vec = gamma_od * g_2,
+                             W_o = W_o_2, W_d = W_d_2, W_w = W_w_2, 
+                             OX = OX, DX = DX,
+                          ind_o = index_o_2, ind_d = index_d_2)
+
+# comparaison
+head(cbind(pred_rec, pred_rec_2))
+```
+
+
+### Computational time  
+
+We compare the computational time using our algorithm, comparing model (2) and model (3)
+```{r}
+# vary the size of n
+vec_n <- seq(5, 60, by = 5)
+```
+
+
+```{r, eval = F}
+time_n <- matrix(0, length(vec_n), 4)
+for(k in 1:length(vec_n)) {
+  print(k)
+  n <- vec_n[k]
+  N <- n ^ 2
+  w <- matrix(0, n, n, byrow = T)
+  site <- paste0("s", 1:n)
+  dimnames(w) <- list(site, site)
+  for(i in 2:(n-1)) {
+    w[i, i-1] <- 0.5
+    w[i, i+1] <- 0.5
+  }
+  w[1, 2] <- 1
+  w[n, n-1] <- 1
+
+  index_o <- paste0("s", rep(1:n, each = n))
+  index_d <- paste0("s", rep(1:n, times = n))
+
+  X <- data.frame(x = rbinom(n, 100, 0.5))
+  rownames(X) <- site
+  
+  long <- 1:n
+  lat <- rep(1, n)
+  g <- as.vector(as.matrix(log(dist(cbind(long, lat)))))
+  require("Matrix")
+  res <- microbenchmark::microbenchmark(
+    temps_1 = {predict_gsim(coeff_x_no_beta_i, rho, alpha = alpha,
+                          OW = w, DW = w, OX = X, DX = X,
+                          ind_o = index_o, ind_d = index_d)},
+    temps_2 = {predict_gsim(coeff_x, rho, alpha = alpha,
+                          OW = w, DW = w, OX = X, DX = X,
+                          ind_o = index_o, ind_d = index_d)},
+    temps_3 = {predict_gsim(coeff_x, rho, alpha = alpha, omega_vec = gamma_od * g,
+                          OW = w, DW = w, OX = X, DX = X,
+                          ind_o = index_o, ind_d = index_d)},
+    temps_4 = {
+      W_d <- kronecker(diag(n), w)
+      W_o <- kronecker(w, diag(n))
+      W_w <- kronecker(w, w)
+      x_o <- kronecker(as(X, "matrix"), rep(1, n))
+      x_d <- kronecker(rep(1, n), as(X, "matrix"))
+
+      predict_gsim_nc(coeff_x, rho, alpha = alpha, 
+                             omega_vec = gamma_od * g,
+                             W_o = W_o, W_d = W_d, W_w = W_w, 
+                             OX = X, DX = X,
+                          ind_o = index_o, ind_d = index_d)}, 
+    times = 5, unit = "milliseconds"
+)
+  time_n[k, ] <- summary(res)$mean
+}
+save(time_n, file = "comp_pred.RData")
+```
+
+```{r}
+load("comp_pred.RData")
+plot(vec_n, time_n[, 1], type = "l", ylim = range(time_n),
+     col = "magenta")
+lines(vec_n, time_n[, 2], lty = 2, col = "magenta")
+lines(vec_n, time_n[, 3], lty = 3, col = "magenta")
+lines(vec_n, time_n[, 4], lty = 1, col = "cyan")
+legend("topright", legend = c("Our simplification without intra and Zij", 
+                              "Our simplification with beta_i",
+                              "Our simplification with beta_i and Zij",
+                              "Classical inversion"),
+       lty = c(1, 2, 3, 1, 2), col = c("magenta", "magenta","magenta", "cyan", "cyan"))
+```
+
+
+## Impact computation (aggregated by site)
+
+```{r}
+source("codes/compute_effects_cartesian.R")
+source("codes/compute_effects_non_cartesian.R")
+```
+
+The function `compute_effect()` allows to compute formulas (14) and (15) in the cartesian case. It requires only the values of the (estimated) parameters, the spatial weight matrices $OW$ ($n_o\times n_o$) and $DW$ ($n_d\times n_d$) and the indices of the flows at origin and destination.  
+
+The function `compute_effect_non_cartesian()` requires the spatial weight matrices $W_o$, $W_d$ and $W_w$ ($N\times N$).
+
+```{r, eval = F}
+compute_effect(Z, rho, OW, DW, ind_o, ind_d, change_z = NULL,
+               site = "all", Y_in_log = F, hat_y = NULL)
+compute_effect_nc(Z, rho, W_o, W_d, W_w, 
+               ind_o, ind_d, change_z = 1)
+```
+
+
+**Input arguments:**
+
+* `Z`: a `data.frame` of size $p\times 5$, with $p$ being the number of variables and the 5 columns names must be `beta_o`, `beta_d`, `beta_i`, `delta_o`, `delta_d` and correspond to the values of the coefficients in model (2) or (3). Names of the variables are given as `row.names`
+
+* `rho`: a vector of size 3 with the values of `rho_o`, `rho_d`, `rho_w`
+
+* `OW`, `DW`: spatial weight matrices of size $n_o$ and $n_d$
+
+* `W_o`, `W_d`, `W_w`: spatial weight matrices of size $n_o$ and $n_d$
+
+* `ind_o`, `ind_d`: indexes of the flows
+
+* `change_z`: a numeric equals to 1 by default, it corresponds to the value of the change operated on $\textbf{Z}$ 
+
+* `site`: a character equals to `"all"` by default otherwise a vector indicating the names of the sites to print.  
+
+* `Y_in_log = F`, a logical, indicates if the model is in logarithm 
+
+* `hat_y = NULL`, a vector of size $N$, if `Y_in_log = T`.
+
+
+**Output arguments:**
+
+It returns a `list` of size $p$ where each element and is a list with two elements: 
+
+* `local_effect`: a `matrix` of size $n_S\times 5$ with the decomposition of the impacts for each site 
+
+* `n_effect`: a `matrix` of size $n_S\times5$ with the number of elements concerned by a change of $\mathbf{Z}$ on site $s$
+
+
+### Example of use
+
+In the first toy example:
+
+```{r}
+#### Square case 
+# cartesian case
+sq <- compute_effect(coeff_x, rho, OW = w, DW = w, ind_o = index_o, ind_d = index_d)
+sq_x <- sq$x
+# non cartesian case
+sq_nc <- compute_effect_nc(coeff_x, rho, W_o = W_o,  W_d = W_d, W_w = W_w, 
+                             ind_o = index_o, ind_d = index_d)
+sq_x_nc <- sq_nc$x
+
+#### Rectangular case 
+# cartesian case
+rec <- compute_effect(coeff_x, rho, OW = ow, DW = dw, ind_o = index_o_2, ind_d = index_d_2)
+rec_x <- rec$x
+# non cartesian case
+rec_nc <- compute_effect_nc(coeff_x, rho, W_o = W_o_2,  W_d = W_d_2, W_w = W_w_2, 
+                             ind_o = index_o_2, ind_d = index_d_2)
+rec_x_nc <- rec_nc$x
+```
+
+To get the decomposition of the impacts:
+
+```{r}
+# square case
+sq_x$local_effect
+# rectangular case
+rec_x$local_effect
+```
+
+To get the number of terms:
+
+```{r}
+# square case
+sq_x$n_effect
+# rectangular case
+rec_x$n_effect
+```
+
+
+### Computational time  
+
+We compare the computational time using our algorithm, comparing model (2) and model (3)
+```{r}
+# vary the size of n
+vec_n <- seq(5, 60, by = 5)
+```
+
+
+```{r, eval = F}
+time_n <- matrix(0, length(vec_n), 3)
+for(k in 1:length(vec_n)) {
+  print(k)
+  n <- vec_n[k]
+  w <- matrix(0, n, n, byrow = T)
+  dimnames(w) <- list(paste0("s", 1:n), paste0("s", 1:n))
+  for(i in 2:(n-1)) {
+    w[i, i-1] <- 0.5
+    w[i, i+1] <- 0.5
+  }
+  w[1, 2] <- 1
+  w[n, n-1] <- 1
+
+  index_o <- paste0("s", rep(1:n, each = n))
+  index_d <- paste0("s", rep(1:n, times = n))
+
+  res <- microbenchmark::microbenchmark( 
+    model_2 = {compute_effect(coeff_x, rho, OW = w, DW = w, 
+                              ind_o = index_o, ind_d = index_d)},
+    model_3 = {compute_effect(coeff_x_no_beta_i, rho, OW = w, DW = w, 
+                              ind_o = index_o, ind_d = index_d)},
+    non_car = {
+      W_d <- kronecker(diag(n), w)
+      W_o <- kronecker(w, diag(n))
+      W_w <- kronecker(w, w)
+      compute_effect_nc(coeff_x, rho, W_o = W_o,  W_d = W_d, W_w = W_w, 
+                             ind_o = index_o, ind_d = index_d)
+    },
+    times = 5)
+  time_n[k, ] <- summary(res)$mean
+}
+save(time_n, file = "comp_1.RData")
+```
+
+```{r}
+load("comp_1.RData")
+plot(vec_n, time_n[, 1], type = "l", ylim = range(time_n), col = "magenta")
+lines(vec_n, time_n[, 2], lty = 2, col = "magenta")
+lines(vec_n, time_n[, 3], lty = 1, col = "cyan")
+legend("topright", legend = c("Simplified with intra", 
+                              "Simplified without intra",
+                              "Classical model"),
+       lty = c(1, 2, 1), col = c("magenta", "magenta", "cyan"))
+```
+
+
+### Model in log
+
+If the dependent variable in the model is in log, one should use the argument `Y_in_log = T` and also add the argument `hat_y`
+
+```{r}
+coeff_x_log <- data.frame(row.names = "x", beta_o = 0.05, beta_d = 0.1, beta_i = 0.01, 
+                      delta_o = 0.02, delta_d = 0.05)
+
+pred_sq_log <- exp(predict_gsim(coeff_x_log, rho, alpha = 0, omega_vec = gamma_od * g,
+                          OW = w, DW = w, OX = X, DX = X,
+                          ind_o = index_o, ind_d = index_d))
+  
+sq_log <- compute_effect(coeff_x_log, rho, OW = w, DW = w, 
+                         ind_o = index_o, ind_d = index_d,
+                         Y_in_log = T, hat_y = pred_sq_log)
+```
+
+Comparaison of the computational time:
+```{r}
+microbenchmark::microbenchmark(
+  no_log = {compute_effect(coeff_x, rho, OW = w, DW = w, 
+                         ind_o = index_o, ind_d = index_d)},
+  log = {compute_effect(coeff_x, rho, OW = w, DW = w, 
+                         ind_o = index_o, ind_d = index_d,
+                         Y_in_log = T, hat_y = rep(1, N))},
+  times = 5
+)
+```
+
+
+### Alternative to return all impacts
+
+
+The functions `compute_all_effect()` and `compute_all_effect_nc()` return all elements in formula (11) for any $s\in S$, $Z$, and pair $o:d$. Decomposition is done according to formula (7). 
+
+```{r}
+source("codes/compute_all_effects_cartesian.R")
+source("codes/compute_all_effects_non_cartesian.R")
+```
+
+**Usage:**
+
+```{r, eval = F}
+compute_all_effect(Z, rho, OW, DW, ind_o, ind_d, change_z = NULL,
+                               site = "all", Y_in_log = F, hat_y = NULL)
+compute_all_effect_nc(Z, rho, W_o, W_d, W_w, 
+                                  ind_o, ind_d, change_z = NULL,
+                                  site = "all", Y_in_log = F, hat_y = NULL) 
+```
+
+**Input arguments:** same as previous
+
+**Output argument:** a `data.frame` with 4 columns `site`, `type`, `var`, `values`.
+
+
+# Model interpretation 
+
+
+## Toy data 1
+
+Considering Model (3) with intra effect, we use function *compute_effect()* to get the decomposition of the impacts:
+
+To get the scalar measures summary (as presented in Table 1):
+```{r}
+kableExtra::kable(apply(sq_x$local_effect, 2, sum) / N)
+```
+
+We transform the data in a long format: 
+
+```{r}
+local_effect <- data.frame(sq_x$local_effect)
+local_effect$site <- row.names(local_effect)
+local_effect <- pivot_longer(local_effect, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "values")
+```
+
+To get Figure 2 a) in the article, 
+
+```{r, fig.width=8, fig.height=5}
+local_effect$type <- factor(local_effect$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect %>%
+  filter(type != "total") %>%
+  ggplot() +
+  geom_col(aes(x = site, fill = type, y = values)) 
+
+# ggsave( filename = "./figures/barplot.pdf", width = 8, height = 5)
+```
+
+We compute the share by site: 
+
+```{r, message = F}
+time_chart <- local_effect %>%
+    filter(type != "total") %>%
+  group_by(site, type) %>%
+  summarise(impacts = sum(values))
+```
+
+To get Figure 2 b) in the article, 
+
+```{r, fig.width=8, fig.height=5}
+ggplot(time_chart, 
+  aes(x = as.numeric(substr(site, 2, 2)),
+      y = impacts,
+      fill = factor(type, levels = c("intra", "origin", "destination", "network") ))) +
+  geom_area(color = "black") +
+  labs(title = "Impact shares",
+       subtitle = "IE(s), OE(s), DE(s), NE(s)",
+       x = "",
+       y = "",
+       fill = "")  +
+  theme_minimal() +
+  scale_x_continuous(breaks = 1:8,
+                     labels = c(paste0("s", 1:8)))
+# ggsave( filename = "./figures/shareplot.pdf", width = 8, height = 5)
+```
+
+To get Local average effects as proposed in Table 3:
+
+```{r}
+sq_x$local_effect / sq_x$n_effect
+```
+
+
+
+We use function function *compute_all_effect()* to get all the individual impacts:
+
+```{r}
+my_data_vis_total <- compute_all_effect(coeff_x, rho, OW = w, DW = w, 
+                              ind_o = index_o, ind_d = index_d)
+```
+
+We add a level "total" to our data:
+
+```{r}
+my_data_vis_total <- rbind(my_data_vis_total,
+                           data.frame(site = my_data_vis_total$site,
+                                      var = "x", type = "total",
+                                      values = my_data_vis_total$values))
+my_data_vis_total$type <- factor(my_data_vis_total$type,
+                          levels = c("intra", "origin", "destination", "network", "total"))
+```
+
+To get Figure 3 in the article:
+
+```{r, echo = F, message=F, fig.width = 12, fig.height = 6, warning = F}
+ggplot(my_data_vis_total, 
+       aes(x = values, 
+           y = site, 
+           fill = site)) +
+  geom_density_ridges(jittered_points = TRUE, scale = .95, rel_min_height = .01,
+    point_shape = "|", point_size = 3, size = 0.25,
+    position = position_points_jitter(height = 0))  +
+  stat_summaryh(fun.x = mean, geom = "text", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=-0.1), colour = "red", size = 2.5) +
+  stat_summaryh(fun.x = mean, geom = "point", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=0.1), colour = "red", size = 1.5) +
+  theme_ridges() + 
+  facet_grid(~ type) +
+  ylab("Local impacts by site") + xlab("") + 
+  labs("Effects") +
+  theme(legend.position = "none")
+# ggsave(filename = "./figures/impacts_site_od.pdf", width = 12, height = 6)
+```
+
+
+## Toy data 2
+
+We use function *compute_effect()* to get the decomposition of the impacts:
+
+
+To get the scalar measures summary:
+```{r}
+kableExtra::kable(apply(rec$x$local_effect, 2, sum) / N_2)
+```
+
+To get Table 2, we change the parameter `type_x`:
+```{r}
+kableExtra::kable(rec$x$n_effect)
+```
+
+To get Figure 4 in the article, we first need to transform the data in a long format: 
+
+```{r}
+local_effect_2 <- data.frame(rec$x$local_effect)
+local_effect_2$site <- row.names(local_effect_2)
+local_effect_2 <- pivot_longer(local_effect_2, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "values")
+```
+
+To get Figure 4:
+
+```{r}
+local_effect_2$type <- factor(local_effect_2$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_2 %>%
+  filter(type != "total") %>%
+  ggplot() +
+  geom_col(aes(x = site, fill = type, y = values)) 
+
+# ggsave( filename = "./figures/barplot.pdf", width = 8, height = 5)
+```
+
+To get Figure 5 in the article, we use function *compute_all_effect()*
+
+```{r}
+my_data_vis_total <- compute_all_effect(coeff_x, rho, OW = ow, DW = dw, 
+                                ind_o = index_o_2, ind_d = index_d_2)
+```
+
+
+
+```{r, echo = T}
+my_data_vis_total <- data.frame(my_data_vis_total)
+# we add the total impacts
+my_data_vis_total <- rbind(my_data_vis_total,
+                           data.frame(site = my_data_vis_total$site,
+                                      var = my_data_vis_total$var,
+                                      type = "total",
+                                      values = my_data_vis_total$values))
+my_data_vis_total$type <- factor(my_data_vis_total$type,
+                          levels = c("intra", "origin", "destination", "network", "total"))
+```
+
+
+```{r, echo = F, message=F, fig.width = 12, fig.height = 6, warning = F}
+ggplot(my_data_vis_total, 
+       aes(x = values, 
+           y = site, 
+           fill = site)) +
+  geom_density_ridges(jittered_points = TRUE, scale = .95, rel_min_height = .01,
+    point_shape = "|", point_size = 3, size = 0.25,
+    position = position_points_jitter(height = 0))  +
+  stat_summaryh(fun.x = mean, geom = "text", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=-0.1), colour = "red", size = 2.5) +
+  stat_summaryh(fun.x = mean, geom = "point", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=0.1), colour = "red", size = 1.5) +
+  theme_ridges() + 
+  facet_grid(~ type) +
+  ylab("Local impacts by site") + xlab("") + 
+  labs("Effects") +
+  theme(legend.position = "none")
+# ggsave(filename = "./figures/impacts_site_od_2.pdf", width = 12, height = 6)
+```
+
+
+# Case study (model in log)
+
+```{r}
+load("data/remit_macro.RData")
+```
+
+The remittances data contains:
+
+* `OX_remit`, a `data.frame` of size $14 \times 3$ including the origin characteristics 
+
+* `DX_remit`, a `data.frame` of size $15 \times 3$ including the destination characteristics 
+
+* `pairs_od`, a `data.frame` of size $209 \times 4$ including the OD pairs of variables 
+
+* `world` a `sf` object containing the world country boundaries
+
+## Map flows
+
+```{r, fig.width = 10, fig.height = 9, echo = T, warning = F, message = F}
+library(sf)
+centroid_sf <- st_centroid(world[
+sapply(c("Canada", "Mexico", "Brazil", "Bahamas",
+"Albania", "France", "Poland", "Kazakhstan",
+"Jordan", "Algeria", "Cameroon",
+"India", "Thailand", "China", "Australia"),
+function(x) grep(x, world$NOM)[1]), ])
+centroid_sf$S <- c("N.America", "C.America", "S.America", "Caribbean", "Eu-oth",
+"UE-bef-2004", "UE-aft-2004", "ex-URSS", "M.East", "N.Africa",
+"Africa", "S.Asia", "SE.Asia", "E.Asia", "Pacific")
+
+library("colorspace")
+q4 <- qualitative_hcl(15, palette = "Dark 3")
+names(q4) <- centroid_sf$S
+poly_sf <- st_transform(world[-160, ], 3035)
+xy_sf <- st_transform(centroid_sf, 3035)
+coords_xy <- st_coordinates(xy_sf)
+rownames(coords_xy) <- xy_sf$S 
+# pdf("figures/remit_1.pdf", width = 10, height = 8)
+par(oma = c(0, 0, 0, 0), mar = c(0, 0, 1, 0)) # , bg = "#AFEEEE")
+plot(st_geometry(poly_sf), col = rgb(0.95, 0.95, 0.95), border = "white")
+map_flows(pairs_od$y, as.character(pairs_od$cont_o),  
+          as.character(pairs_od$cont_d), 
+          coords_xy, q4 = q4, alpha.q = 0.8, 
+          label_s = F, maxlwd = 1.5, add = T, x.legend = "bottomleft")
+# dev.off()
+```
+
+We define `OW_remit` and `DW_remit`, as the spatial weight matrices on the origins, resp. destinations based on 3 nearest neighbours
+
+```{r}
+n_o_remit <- nrow(OX_remit)
+names_o <- levels(OX_remit$cont)
+names_o <- names_o[names_o != "S.Asia"]
+OW_remit <- matrix(0, n_o_remit, n_o_remit)
+dimnames(OW_remit) <- list(names_o, names_o)
+OW_remit["Africa", c("N.Africa", "UE-bef-2004", "M.East")] <- 1/3
+OW_remit["C.America", c("N.America", "S.America", "Caribbean")] <- 1/3
+OW_remit["Caribbean", c("C.America", "N.America", "S.America")] <- 1/3
+OW_remit["E.Asia", c("SE.Asia", "ex-URSS", "Pacific")] <- 1/3
+OW_remit["Eu-oth", c("UE-bef-2004", "UE-aft-2004", "ex-URSS")] <- 1/3
+OW_remit["ex-URSS", c("E.Asia", "M.East", "UE-aft-2004")] <- 1/3
+OW_remit["M.East", c("N.Africa", "Africa", "ex-URSS")] <- 1/3
+OW_remit["N.Africa", c("Africa", "UE-bef-2004", "M.East")] <- 1/3
+OW_remit["N.America", c("C.America", "Caribbean", "UE-bef-2004")] <- 1/3
+OW_remit["Pacific", c("SE.Asia", "E.Asia", "S.America")] <- 1/3
+OW_remit["S.America", c("N.America", "Caribbean", "C.America")] <- 1/3
+OW_remit["SE.Asia", c("Pacific", "E.Asia", "ex-URSS")] <- 1/3
+OW_remit["UE-aft-2004", c("UE-bef-2004", "Eu-oth", "ex-URSS")] <- 1/3
+OW_remit["UE-bef-2004", c("Eu-oth", "UE-aft-2004", "N.Africa")] <- 1/3
+```
+
+```{r}
+n_d_remit <- nrow(DX_remit)
+names_d <- levels(DX_remit$cont)
+DW_remit <- matrix(0, n_d_remit, n_d_remit)
+dimnames(DW_remit) <- list(names_d, names_d)
+DW_remit["Africa", c("N.Africa", "UE-bef-2004", "M.East")] <- 1/3
+DW_remit["C.America", c("N.America", "S.America", "Caribbean")] <- 1/3
+DW_remit["Caribbean", c("C.America", "N.America", "S.America")] <- 1/3
+DW_remit["E.Asia", c("SE.Asia", "ex-URSS", "S.Asia")] <- 1/3
+DW_remit["Eu-oth", c("UE-bef-2004", "UE-aft-2004", "ex-URSS")] <- 1/3
+DW_remit["ex-URSS", c("E.Asia", "M.East", "UE-aft-2004")] <- 1/3
+DW_remit["M.East", c("N.Africa", "Africa", "ex-URSS")] <- 1/3
+DW_remit["N.Africa", c("Africa", "UE-bef-2004", "M.East")] <- 1/3
+DW_remit["N.America", c("C.America", "Caribbean", "UE-bef-2004")] <- 1/3
+DW_remit["Pacific", c("SE.Asia", "E.Asia", "S.Asia")] <- 1/3
+DW_remit["S.America", c("N.America", "Caribbean", "C.America")] <- 1/3
+DW_remit["S.Asia", c("SE.Asia", "E.Asia", "ex-URSS")] <- 1/3
+DW_remit["SE.Asia", c("Pacific", "E.Asia", "S.Asia")] <- 1/3
+DW_remit["UE-aft-2004", c("UE-bef-2004", "Eu-oth", "ex-URSS")] <- 1/3
+DW_remit["UE-bef-2004", c("Eu-oth", "UE-aft-2004", "N.Africa")] <- 1/3
+```
+
+## Estimation part
+
+For the estimation part, we need to load some functions:
+
+```{r}
+source("codes/ftrace1.R")
+source("codes/sar_flow_2.R")
+```
+
+Model estimation requires the computation of spatial weight matrices $W_o$ and $W_d$:
+
+```{r}
+W_o_remit <- kronecker(OW_remit, diag(n_d_remit))
+flow_names <- paste0(rep(names_o, each = 15), "-", rep(names_d, times = 14))
+dimnames(W_o_remit) <- list(flow_names, flow_names)
+W_d_remit <- kronecker(diag(n_o_remit), DW_remit)
+dimnames(W_d_remit) <- list(flow_names, flow_names)
+pairs_od$cont_o <- as.character(pairs_od$cont_o)
+pairs_od$cont_d <- as.character(pairs_od$cont_d)
+row.names(pairs_od) <- paste0(pairs_od$cont_o, "-", pairs_od$cont_d)
+pairs_od <- pairs_od[flow_names, ]
+```
+
+We also need to prepare the explanatory variables:
+
+```{r}
+row.names(OX_remit) <- OX_remit$cont
+row.names(DX_remit) <- DX_remit$cont
+my_data_c <- data.frame(
+  log_send_electricity_use_pc = OX_remit[pairs_od$cont_o,
+                "log_electricity_use_pc"],
+  log_sendpop = OX_remit[pairs_od$cont_o, "log_pop"],
+  send_WU_resid = OX_remit[pairs_od$cont_o, "WU_resid"],
+  lagged_log_send_electricity_use_pc = W_o_remit %*% 
+    OX_remit[pairs_od$cont_o, "log_electricity_use_pc"], 
+  log_rec_electricity_use_pc = DX_remit[pairs_od$cont_d, 
+                                        "log_electricity_use_pc"],
+  log_rec_pop = DX_remit[pairs_od$cont_d, "log_pop"], 
+  rec_polstab = DX_remit[pairs_od$cont_d, "polstab"],
+  lagged_log_rec_electricity_use_pc = W_d_remit %*% 
+    DX_remit[pairs_od$cont_d, "log_electricity_use_pc"],
+  log_intra_electricity_use_pc = ifelse(pairs_od$cont_o == pairs_od$cont_d,
+      OX_remit[pairs_od$cont_o, "log_electricity_use_pc"], 0),
+  log_intra_pop = ifelse(pairs_od$cont_o == pairs_od$cont_d,
+      OX_remit[pairs_od$cont_o, "log_pop"], 0),
+  cst_intra = ifelse(pairs_od$cont_o == pairs_od$cont_d, 1, 0))
+```
+
+We consider model (2) without intra effect:
+```{r, eval = F}
+set.seed(123)
+system.time(sdm_bay_without_intra <- sar_flow_2(
+  x = my_data_c[, !(names(my_data_c) %in% c("log_intra_electricity_use_pc", 
+                     "log_intra_pop", "cst_intra"))],
+  y = log(1 + pairs_od$y), 
+  g = log(1 + pairs_od$g), 
+  W_o = W_o_remit, W_d = W_d_remit,  
+  model = "model_7"))
+
+# We consider model (3) with intra effect:
+sdm_bay_with_intra <- sar_flow_2(
+  x = my_data_c,
+  y = log(1 + pairs_od$y), 
+  g = log(1 + pairs_od$g), 
+  W_o = W_o_remit, W_d = W_d_remit,  
+  model = "model_7")
+save(sdm_bay_without_intra, sdm_bay_with_intra, file = "result/res_bayes.RData")
+```
+
+```{r, echo= F}
+load("result/res_bayes.RData")
+```
+
+
+```{r}
+sdm_bay_sum_with_intra <- summary_bayesian_sar_flow(sdm_bay_with_intra)
+# proba_coeff <- pt(sdm_bay_with_intra[, 4])
+```
+
+```{r}
+sdm_bay_sum_without_intra <- summary_bayesian_sar_flow(sdm_bay_without_intra)
+# proba_coeff <- pt(sdm_bay_with_intra[, 4])
+```
+
+```{r, eval = F, echo = F}
+# Electricity 
+cat("Log(Electric Use PC) & ", round(sdm_bay_sum_without_intra[4, 1], 3), 
+    "&", round(sdm_bay_sum_without_intra[8, 1], 3), "&", 
+    round(sdm_bay_sum_without_intra[7, 1], 3), "&", 
+    round(sdm_bay_sum_without_intra[11, 1], 3), "&",
+    round(sdm_bay_sum_with_intra[4, 1], 3), "&", 
+    round(sdm_bay_sum_with_intra[8, 1], 3), "&", 
+    round(sdm_bay_sum_with_intra[12, 1], 3), "&", 
+    round(sdm_bay_sum_with_intra[7, 1], 3), "&", 
+    round(sdm_bay_sum_with_intra[11, 1], 3))
+
+cat(" & $(", round(sdm_bay_sum_without_intra[4, 5], 2), 
+    ")$ & $(", round(sdm_bay_sum_without_intra[8, 5], 2), ")$ & $(", 
+    round(sdm_bay_sum_without_intra[7, 5], 2), ")$ & $(", 
+    round(sdm_bay_sum_without_intra[11, 5], 2), ")$ & $(",
+    round(sdm_bay_sum_with_intra[4, 5], 2), ")$ & $(", 
+    round(sdm_bay_sum_with_intra[8, 5], 2), ")$ & $(", 
+    round(sdm_bay_sum_with_intra[12, 5], 2), ")$ & $(",
+    round(sdm_bay_sum_with_intra[7, 5], 2), ")$ & $(", 
+    round(sdm_bay_sum_with_intra[11, 5], 2), ")$")
+
+# Population
+cat("Log(Population) & ", round(sdm_bay_sum_without_intra[5, 1], 3), 
+    "&", round(sdm_bay_sum_without_intra[9, 1], 3), "&", 
+    ".", "&", 
+    ".", "&",
+    round(sdm_bay_sum_with_intra[5, 1], 3), "&", 
+    round(sdm_bay_sum_with_intra[9, 1], 3), "&", 
+    round(sdm_bay_sum_with_intra[13, 1], 3), "&", 
+    ".", "&", 
+    ".")
+
+cat(" & $(", round(sdm_bay_sum_without_intra[5, 5], 2), 
+    ")$ & $(", round(sdm_bay_sum_without_intra[9, 5], 2), ")$ & ", 
+    ".", " & ", 
+    ".", " & $(",
+    round(sdm_bay_sum_with_intra[5, 5], 2), ")$ & $(", 
+    round(sdm_bay_sum_with_intra[9, 5], 2), ")$ & $(", 
+    round(sdm_bay_sum_with_intra[13, 5], 2), ")$ & ",
+    ".", " & ", 
+    ".")
+```
+
+
+
+## Impact computation
+
+We prepare the `data.frame` that contains the estimated parameters:
+
+```{r}
+# without intra
+rho_remit_without_intra <- c(sdm_bay_sum_without_intra[1:2, 1], 0)
+alpha_remit_without_intra <- sdm_bay_sum_without_intra[3, 1] 
+coeff_remit_without_intra <- data.frame(
+  row.names = c("log_electricity_use_pc", "log_pop", 
+                "WU_resid", "polstab"),
+  beta_o = c(sdm_bay_sum_without_intra[4:6, 1], 0),
+  beta_d = c(sdm_bay_sum_without_intra[8:9, 1], 0, sdm_bay_sum_without_intra[10, 1]),
+  delta_o = c(sdm_bay_sum_without_intra[7, 1], 0, 0, 0),
+  delta_d = c(sdm_bay_sum_without_intra[11, 1], 0, 0, 0),
+  beta_i = c(0, 0, 0, 0))
+
+# with intra
+rho_remit_with_intra <- c(sdm_bay_sum_with_intra[1:2, 1], 0)
+alpha_remit_with_intra <- sdm_bay_sum_with_intra[3, 1] 
+coeff_remit_with_intra <- data.frame(
+  row.names = c("log_electricity_use_pc", "log_pop", 
+                "WU_resid", "polstab"),
+  beta_o = c(sdm_bay_sum_with_intra[4:6, 1], 0),
+  beta_d = c(sdm_bay_sum_with_intra[8:9, 1], 0, sdm_bay_sum_with_intra[10, 1]),
+  delta_o = c(sdm_bay_sum_with_intra[7, 1], 0, 0, 0),
+  delta_d = c(sdm_bay_sum_with_intra[11, 1], 0, 0, 0),
+  beta_i = c(sdm_bay_sum_with_intra[12, 1], sdm_bay_sum_with_intra[13, 1], 0, 0))
+```
+
+
+To compute the predictions, we need to compute the part containing the pairs variable:
+
+```{r}
+omega_vec_remit_without_intra <- log(1 + pairs_od$g) * sdm_bay_sum_without_intra[12, 1]
+
+omega_vec_remit_with_intra <- my_data_c$cst_intra * sdm_bay_sum_with_intra[14, 1] +
+  log(1 + pairs_od$g) * sdm_bay_sum_with_intra[15, 1]
+```
+
+We compute the predictions as the model is in log:
+
+```{r}
+tc_remit_without_intra <- as.vector(
+  predict_gsim(coeff_remit_without_intra, rho_remit_without_intra, 
+               alpha = alpha_remit_without_intra, 
+               omega_vec = omega_vec_remit_without_intra, # cste,
+               OW = OW_remit, DW = DW_remit,
+               OX = OX_remit, DX = DX_remit,
+               ind_o = pairs_od$cont_o, 
+               ind_d = pairs_od$cont_d))
+tc_remit_with_intra <- as.vector(
+  predict_gsim(coeff_remit_with_intra, rho_remit_with_intra, 
+               alpha = alpha_remit_with_intra, 
+               omega_vec = omega_vec_remit_with_intra, # cste,
+               OW = OW_remit, DW = DW_remit,
+               OX = OX_remit, DX = DX_remit,
+               ind_o = pairs_od$cont_o, 
+               ind_d = pairs_od$cont_d))
+```
+
+
+We compute the MSE:
+```{r}
+mean((log(1 + pairs_od$y) - tc_remit_without_intra) ^ 2)
+mean((log(1 + pairs_od$y) - tc_remit_with_intra) ^ 2)
+```
+
+
+
+Then, we compute the impacts decomposition:
+```{r}
+effect_remit_without_intra <- compute_effect(coeff_remit_without_intra,
+                            rho_remit_without_intra,
+                            OW = OW_remit, DW = DW_remit,
+                            ind_o = pairs_od$cont_o, ind_d = pairs_od$cont_d,
+                            site = "all", Y_in_log = T, 
+                            hat_y = exp(tc_remit_without_intra),
+                            change_z = c(0.01, 0.01,
+                                         diff(range(OX_remit$WU_resid)) / 100,
+                                         diff(range(DX_remit$polstab)) / 100))
+effect_remit_with_intra <- compute_effect(coeff_remit_with_intra,
+                            rho_remit_with_intra,
+                            OW = OW_remit, DW = DW_remit,
+                            ind_o = pairs_od$cont_o, ind_d = pairs_od$cont_d,
+                            site = "all", Y_in_log = T, 
+                            hat_y = exp(tc_remit_with_intra),
+                            change_z = c(0.01, 0.01,
+                                         diff(range(OX_remit$WU_resid)) / 100,
+                                         diff(range(DX_remit$polstab)) / 100))
+```
+
+We compare the computaional time between the cartesian and non-cartesian case:
+
+```{r, eval = F}
+time_comp <- microbenchmark(
+  ##### Rectangular case  
+  # without intra
+  time_1 = {effect_remit_without_intra <- compute_effect(coeff_remit_without_intra,
+                            rho_remit_without_intra,
+                            OW = OW_remit, DW = DW_remit,
+                            ind_o = pairs_od$cont_o, ind_d = pairs_od$cont_d,
+                            site = "all", Y_in_log = T, 
+                            hat_y = exp(tc_remit_without_intra),
+                            change_z = c(0.01, 0.01,
+                                         diff(range(OX_remit$WU_resid)) / 100,
+                                         diff(range(DX_remit$polstab)) / 100))},
+  # with intra
+  time_2 = {effect_remit_with_intra <- compute_effect(coeff_remit_with_intra,
+                            rho_remit_with_intra,
+                            OW = OW_remit, DW = DW_remit,
+                            ind_o = pairs_od$cont_o, ind_d = pairs_od$cont_d,
+                            site = "all", Y_in_log = T, 
+                            hat_y = exp(tc_remit_with_intra),
+                            change_z = c(0.01, 0.01,
+                                         diff(range(OX_remit$WU_resid)) / 100,
+                                         diff(range(DX_remit$polstab)) / 100))},
+  ##### Non Rectangular case  
+  # without intra
+  time_3 = {effect_remit_without_intra_nc <-
+    compute_effect_nc(coeff_remit_without_intra,
+                            rho_remit_without_intra,
+                            W_o = W_o_remit, W_d = W_d_remit, W_w = NULL,
+                            ind_o = pairs_od$cont_o, ind_d = pairs_od$cont_d,
+                            site = "all", Y_in_log = T, 
+                            hat_y = exp(tc_remit_without_intra),
+                            change_z = c(0.01, 0.01,
+                                         diff(range(OX_remit$WU_resid)) / 100,
+                                         diff(range(DX_remit$polstab)) / 100))},
+  # with intra
+  time_4 = {effect_remit_with_intra_nc <- 
+    compute_effect_nc(coeff_remit_with_intra,
+                   rho_remit_with_intra,
+                   W_o = W_o_remit, W_d = W_d_remit, W_w = NULL,
+                   ind_o = pairs_od$cont_o, ind_d = pairs_od$cont_d,
+                   site = "all", Y_in_log = T, 
+                   hat_y = exp(tc_remit_with_intra),
+                   change_z = c(0.01, 0.01,
+                                diff(range(OX_remit$WU_resid)) / 100,
+                                diff(range(DX_remit$polstab)) / 100))},
+  times = 10
+)
+save(time_comp, file = "result/time_comp.RData")
+```
+
+```{r}
+load("result/time_comp.RData")
+time_comp
+```
+
+Global summary measures:
+```{r}
+# without intra
+res_1 <- round(t(sapply(effect_remit_without_intra, function(x) apply(x$local_effect, 2, sum))) / 210, 1)
+# t(sapply(effect_remit_without_intra_nc, function(x) apply(x$local_effect, 2, sum))) / 210
+# with intra
+res_2 <- round(t(sapply(effect_remit_with_intra, function(x) apply(x$local_effect, 2, sum))) / 210, 1)
+# t(sapply(effect_remit_with_intra_nc, function(x) apply(x$local_effect, 2, sum))) / 210
+cat(res_1[1, 1], "&", res_1[1, 2], "&", res_1[1, 3], "&", res_1[1, 4], "&", res_1[1, 5], "&",
+    res_2[1, 1], "&", res_2[1, 2], "&", res_2[1, 3], "&", res_2[1, 4], "&", res_2[1, 5])
+
+cat(res_1[2, 1], "&", res_1[2, 2], "&", res_1[2, 3], "&", res_1[2, 4], "&", res_1[2, 5], "&",
+    res_2[2, 1], "&", res_2[2, 2], "&", res_2[2, 3], "&", res_2[2, 4], "&", res_2[2, 5])
+
+cat(res_1[3, 1], "&", res_1[3, 2], "&", res_1[3, 3], "&", res_1[3, 4], "&", res_1[3, 5], "&",
+    res_2[3, 1], "&", res_2[3, 2], "&", res_2[3, 3], "&", res_2[3, 4], "&", res_2[3, 5])
+
+cat(res_1[4, 1], "&", res_1[4, 2], "&", res_1[4, 3], "&", res_1[4, 4], "&", res_1[4, 5], "&",
+    res_2[4, 1], "&", res_2[4, 2], "&", res_2[4, 3], "&", res_2[4, 4], "&", res_2[4, 5])
+```
+
+
+```{r, eval = F, echo = F}
+# To get the significant measures, we need to make the computations on all the replications:
+log_electricity_use_pc_without <- matrix(0, 3000, 5)
+log_pop_without <- matrix(0, 3000, 5)
+WU_resid_without <- matrix(0, 3000, 5)
+polstab_without <- matrix(0, 3000, 5)
+
+log_electricity_use_pc_with <- matrix(0, 3000, 5)
+log_pop_with <- matrix(0, 3000, 5)
+WU_resid_with <- matrix(0, 3000, 5)
+polstab_with <- matrix(0, 3000, 5)
+
+# b = 1984
+for (b in 1:3000) {
+  print(b)
+  # without intr
+  rho_remit_without_intra <- c(sdm_bay_without_intra$psave[b, 1:2], 0)
+  alpha_remit_without_intra <- sdm_bay_without_intra$bsave[b, 1] 
+  coeff_remit_without_intra <- data.frame(
+     row.names = c("log_electricity_use_pc", "log_pop", 
+                "WU_resid", "polstab"),
+  beta_o = c(sdm_bay_without_intra$bsave[b, 2:4], 0),
+  beta_d = c(sdm_bay_without_intra$bsave[b, 6:7], 0, sdm_bay_without_intra$bsave[b, 8]),
+  delta_o = c(sdm_bay_without_intra$bsave[b, 5], 0, 0, 0),
+  delta_d = c(sdm_bay_without_intra$bsave[b, 9], 0, 0, 0),
+  beta_i = c(0, 0, 0, 0))
+
+  # with intra
+  rho_remit_with_intra <- c(sdm_bay_with_intra$psave[b, 1:2], 0)
+  alpha_remit_with_intra <- sdm_bay_with_intra$bsave[b, 1]
+  coeff_remit_with_intra <- data.frame(
+    row.names = c("log_electricity_use_pc", "log_pop", 
+                "WU_resid", "polstab"),
+    beta_o = c(sdm_bay_with_intra$bsave[b, 2:4], 0),
+    beta_d = c(sdm_bay_with_intra$bsave[b, 6:7], 0, sdm_bay_with_intra$bsave[b, 8]),
+    delta_o = c(sdm_bay_with_intra$bsave[b, 5], 0, 0, 0),
+    delta_d = c(sdm_bay_with_intra$bsave[b, 9], 0, 0, 0),
+    beta_i = c(sdm_bay_with_intra$bsave[b, 10:11], 0, 0))
+  
+  # compute the intra
+  omega_vec_remit_without_intra <- log(1 + pairs_od$g) * sdm_bay_without_intra$bsave[b, 10]
+
+  omega_vec_remit_with_intra <- my_data_c$cst_intra * sdm_bay_with_intra$bsave[b, 12] +
+    log(1 + pairs_od$g) * sdm_bay_with_intra$bsave[b, 13]
+  
+  # compute the predictions
+  tc_remit_without_intra <- as.vector(
+    predict_gsim(coeff_remit_without_intra, rho_remit_without_intra, 
+                 alpha = alpha_remit_without_intra, 
+                 omega_vec = omega_vec_remit_without_intra, # cste,
+                 OW = OW_remit, DW = DW_remit,
+                 OX = OX_remit, DX = DX_remit,
+                 ind_o = pairs_od$cont_o, 
+                 ind_d = pairs_od$cont_d))
+  tc_remit_with_intra <- as.vector(
+    predict_gsim(coeff_remit_with_intra, rho_remit_with_intra, 
+                 alpha = alpha_remit_with_intra, 
+                 omega_vec = omega_vec_remit_with_intra, # cste,
+                 OW = OW_remit, DW = DW_remit,
+                 OX = OX_remit, DX = DX_remit,
+                 ind_o = pairs_od$cont_o, 
+                 ind_d = pairs_od$cont_d))
+  # compute the effects
+  effect_remit_without_intra <- compute_effect(coeff_remit_without_intra,
+                            rho_remit_without_intra,
+                            OW = OW_remit, DW = DW_remit,
+                            ind_o = pairs_od$cont_o, ind_d = pairs_od$cont_d,
+                            site = "all", Y_in_log = T, 
+                            hat_y = exp(tc_remit_without_intra),
+                            change_z = c(0.01, 0.01,
+                                         diff(range(OX_remit$WU_resid)) / 100,
+                                         diff(range(DX_remit$polstab)) / 100))
+  # with intra
+  effect_remit_with_intra <- compute_effect(coeff_remit_with_intra,
+                            rho_remit_with_intra,
+                            OW = OW_remit, DW = DW_remit,
+                            ind_o = pairs_od$cont_o, ind_d = pairs_od$cont_d,
+                            site = "all", Y_in_log = T, 
+                            hat_y = exp(tc_remit_with_intra),
+                            change_z = c(0.01, 0.01,
+                                         diff(range(OX_remit$WU_resid)) / 100,
+                                         diff(range(DX_remit$polstab)) / 100))
+  
+  # compute the gobal summary measures
+  temp_1 <- t(sapply(effect_remit_without_intra, function(x) apply(x$local_effect, 2, sum))) / 210
+  temp_2 <- t(sapply(effect_remit_with_intra, function(x) apply(x$local_effect, 2, sum))) / 210
+  
+  # 
+  log_electricity_use_pc_without[b, ] <- temp_1[1, ]
+  log_electricity_use_pc_with[b, ] <- temp_2[1, ]
+  log_pop_without[b, ] <- temp_1[2, ]
+  log_pop_with[b, ] <- temp_2[2, ]
+  WU_resid_without[b, ] <- temp_1[3, ]
+  WU_resid_with[b, ] <- temp_2[3, ]
+  polstab_without[b, ] <- temp_1[4, ]
+  polstab_with[b, ] <- temp_2[4, ]
+}
+
+t(apply(log_electricity_use_pc_with, 2, function(x) 
+  c(quantile(x, 0.025), mean(x), median(x), quantile(x, 0.975))))
+```
+
+
+
+### Electricity
+
+* Alternative local summaries
+
+```{r}
+# without intra
+local_effect_elec_without_intra <- data.frame(effect_remit_without_intra$log_electricity_use_pc$local_effect)
+local_effect_elec_without_intra$site <- row.names(local_effect_elec_without_intra)
+local_effect_elec_without_intra <- pivot_longer(local_effect_elec_without_intra, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "Impacts due to Electric Use PC")
+# with intra
+local_effect_elec_with_intra <- data.frame(effect_remit_with_intra$log_electricity_use_pc$local_effect)
+local_effect_elec_with_intra$site <- row.names(local_effect_elec_with_intra)
+local_effect_elec_with_intra <- pivot_longer(local_effect_elec_with_intra, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "Impacts due to Electric Use PC")
+```
+
+* Local plot 
+```{r}
+# without intra
+local_effect_elec_without_intra$type <- factor(local_effect_elec_without_intra$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_elec_without_intra$model <- "Without intra"
+# with intra
+local_effect_elec_with_intra$type <- factor(local_effect_elec_with_intra$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_elec_with_intra$model <- "With intra"
+  
+local_effect_elec <- rbind(local_effect_elec_without_intra, local_effect_elec_with_intra)
+
+local_effect_elec$model <- factor(local_effect_elec$model, levels = c("Without intra", "With intra"))
+
+local_effect_elec %>%
+  filter(type != "total") %>%
+  ggplot() +
+  geom_col(aes(x = site, fill = type, y = `Impacts due to Electric Use PC`)) +
+  theme(axis.text.x = element_text(angle = 90))  +
+  facet_wrap(~ model)
+
+ggsave( filename = "./figures/barplot_elec.pdf", width = 12, height = 5)
+```
+
+```{r, echo = F, eval = F, message=F, fig.width = 12, fig.height = 6, warning = F}
+# * Full decomposition
+all_remit_with_intra %>%
+  filter(var == "log_electricity_use_pc") %>%
+ggplot() + 
+  aes(x = values, 
+           y = site, 
+           fill = site) +
+  geom_density_ridges(jittered_points = TRUE, scale = .95, rel_min_height = .01,
+    point_shape = "|", point_size = 3, size = 0.25,
+    position = position_points_jitter(height = 0))  +
+  stat_summaryh(fun.x = mean, geom = "text", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=-0.1), colour = "red", size = 2.5) +
+  stat_summaryh(fun.x = mean, geom = "point", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=0.1), colour = "red", size = 1.5) +
+  theme_ridges() + 
+  facet_grid(~ type) +
+  ylab("Local impacts by site") + xlab("") + 
+  labs("Effects") +
+  theme(legend.position = "none")
+ggsave(filename = "./figures/impacts_site_od_2.pdf", width = 12, height = 5)
+```
+
+
+### Population
+
+* Alternative local summaries
+
+```{r}
+# without intra
+local_effect_pop_without_intra <- data.frame(effect_remit_without_intra$log_pop$local_effect)
+local_effect_pop_without_intra$site <- row.names(local_effect_pop_without_intra)
+local_effect_pop_without_intra <- pivot_longer(local_effect_pop_without_intra, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "Impacts due to Population")
+# with intra
+local_effect_pop_with_intra <- data.frame(effect_remit_with_intra$log_pop$local_effect)
+local_effect_pop_with_intra$site <- row.names(local_effect_pop_with_intra)
+local_effect_pop_with_intra <- pivot_longer(local_effect_pop_with_intra, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "Impacts due to Population")
+```
+
+* Local plot 
+```{r}
+# without intra
+local_effect_pop_without_intra$type <- factor(local_effect_pop_without_intra$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_pop_without_intra$model <- "Without intra"
+# with intra
+local_effect_pop_with_intra$type <- factor(local_effect_pop_with_intra$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_pop_with_intra$model <- "With intra"
+  
+local_effect_pop<- rbind(local_effect_pop_without_intra, local_effect_pop_with_intra)
+
+local_effect_pop$model <- factor(local_effect_pop$model, levels = c("Without intra", "With intra"))
+
+
+local_effect_pop %>%
+  filter(type != "total") %>%
+  ggplot() +
+  geom_col(aes(x = site, fill = type, y = `Impacts due to Population`)) +
+  theme(axis.text.x = element_text(angle = 90))  +
+  facet_wrap(~ model)
+
+ggsave( filename = "./figures/barplot_population.pdf", width = 12, height = 5)
+```
+
+
+```{r, echo = F, eval = F, message=F, fig.width = 12, fig.height = 6, warning = F}
+# * Full decomposition
+all_remit_with_intra %>%
+  filter(var == "log_electricity_use_pc") %>%
+ggplot() + 
+  aes(x = values, 
+           y = site, 
+           fill = site) +
+  geom_density_ridges(jittered_points = TRUE, scale = .95, rel_min_height = .01,
+    point_shape = "|", point_size = 3, size = 0.25,
+    position = position_points_jitter(height = 0))  +
+  stat_summaryh(fun.x = mean, geom = "text", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=-0.1), colour = "red", size = 2.5) +
+  stat_summaryh(fun.x = mean, geom = "point", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=0.1), colour = "red", size = 1.5) +
+  theme_ridges() + 
+  facet_grid(~ type) +
+  ylab("Local impacts by site") + xlab("") + 
+  labs("Effects") +
+  theme(legend.position = "none")
+# ggsave(filename = "./figures/impacts_site_od_2.pdf", width = 12, height = 6)
+```
+
+
+
+### Transfer cost
+
+* Alternative local summaries
+
+```{r}
+# without intra
+local_effect_WU_resid_without_intra <- data.frame(effect_remit_without_intra$WU_resid$local_effect)
+local_effect_WU_resid_without_intra$site <- row.names(local_effect_WU_resid_without_intra)
+local_effect_WU_resid_without_intra <- pivot_longer(local_effect_WU_resid_without_intra, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "Impacts due to Transfer Cost")
+# with intra
+local_effect_WU_resid_with_intra <- data.frame(effect_remit_with_intra$WU_resid$local_effect)
+local_effect_WU_resid_with_intra$site <- row.names(local_effect_WU_resid_with_intra)
+local_effect_WU_resid_with_intra <- pivot_longer(local_effect_WU_resid_with_intra, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "Impacts due to Transfer Cost")
+```
+
+* Local plot 
+```{r}
+# without intra
+local_effect_WU_resid_without_intra$type <- factor(local_effect_WU_resid_without_intra$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_WU_resid_without_intra$model <- "Without intra"
+# with intra
+local_effect_WU_resid_with_intra$type <- factor(local_effect_WU_resid_with_intra$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_WU_resid_with_intra$model <- "With intra"
+  
+local_effect_WU_resid <- rbind(local_effect_WU_resid_without_intra, local_effect_WU_resid_with_intra)
+
+local_effect_WU_resid$model <- factor(local_effect_WU_resid$model, levels = c("Without intra", "With intra"))
+
+
+local_effect_WU_resid %>%
+  filter(type != "total") %>%
+  ggplot() +
+  geom_col(aes(x = site, fill = type, y = `Impacts due to Transfer Cost`)) +
+  theme(axis.text.x = element_text(angle = 90))  +
+  facet_wrap(~ model)
+
+ggsave( filename = "./figures/barplot_transfer.pdf", width = 12, height = 5)
+```
+
+
+```{r, echo = F, eval = F, message=F, fig.width = 12, fig.height = 6, warning = F}
+# * Full decomposition
+all_remit_with_intra %>%
+  filter(var == "WU_resid") %>%
+ggplot() + 
+  aes(x = values, 
+           y = site, 
+           fill = site) +
+  geom_density_ridges(jittered_points = TRUE, scale = .95, rel_min_height = .01,
+    point_shape = "|", point_size = 3, size = 0.25,
+    position = position_points_jitter(height = 0))  +
+  stat_summaryh(fun.x = mean, geom = "text", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=-0.1), colour = "red", size = 2.5) +
+  stat_summaryh(fun.x = mean, geom = "point", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=0.1), colour = "red", size = 1.5) +
+  theme_ridges() + 
+  facet_grid(~ type) +
+  ylab("Local impacts by site") + xlab("") + 
+  labs("Effects") +
+  theme(legend.position = "none")
+# ggsave(filename = "./figures/impacts_site_od_2.pdf", width = 12, height = 6)
+```
+
+
+
+
+
+
+### Political Stability
+
+* Alternative local summaries
+
+```{r}
+# without intra
+local_effect_polstab_without_intra <- data.frame(effect_remit_without_intra$polstab$local_effect)
+local_effect_polstab_without_intra$site <- row.names(local_effect_polstab_without_intra)
+local_effect_polstab_without_intra <- pivot_longer(local_effect_polstab_without_intra, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "Impacts due to Political stability")
+# with intra
+local_effect_polstab_with_intra <- data.frame(effect_remit_with_intra$polstab$local_effect)
+local_effect_polstab_with_intra$site <- row.names(local_effect_polstab_with_intra)
+local_effect_polstab_with_intra <- pivot_longer(local_effect_polstab_with_intra, cols = 1:5,
+                             names_to = "type", 
+                             values_to = "Impacts due to Political stability")
+```
+
+* Local plot 
+```{r}
+# without intra
+local_effect_polstab_without_intra$type <- factor(local_effect_polstab_without_intra$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_polstab_without_intra$model <- "Without intra"
+# with intra
+local_effect_polstab_with_intra$type <- factor(local_effect_polstab_with_intra$type, 
+      levels = c("IE", "OE", "DE", "NE", "TE"),
+      labels = c("intra", "origin", "destination", "network", "total"))
+local_effect_polstab_with_intra$model <- "With intra"
+  
+local_effect_polstab <- rbind(local_effect_polstab_without_intra, local_effect_polstab_with_intra)
+
+local_effect_polstab$model <- factor(local_effect_polstab$model, levels = c("Without intra", "With intra"))
+
+
+
+local_effect_polstab %>%
+  filter(type != "total") %>%
+  ggplot() +
+  geom_col(aes(x = site, fill = type, y = `Impacts due to Political stability`)) +
+  theme(axis.text.x = element_text(angle = 90))  +
+  facet_wrap(~ model)
+
+ggsave( filename = "./figures/barplot_political.pdf", width = 12, height = 5)
+```
+
+
+```{r, echo = F, eval = F, message=F, fig.width = 12, fig.height = 6, warning = F}
+# * Full decomposition
+all_remit_with_intra %>%
+  filter(var == "polstab") %>%
+ggplot() + 
+  aes(x = values, 
+           y = site, 
+           fill = site) +
+  geom_density_ridges(jittered_points = TRUE, scale = .95, rel_min_height = .01,
+    point_shape = "|", point_size = 3, size = 0.25,
+    position = position_points_jitter(height = 0))  +
+  stat_summaryh(fun.x = mean, geom = "text", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=-0.1), colour = "red", size = 2.5) +
+  stat_summaryh(fun.x = mean, geom = "point", aes(label=sprintf("%1.3f", ..x..)),
+                position = position_nudge(y=0.1), colour = "red", size = 1.5) +
+  theme_ridges() + 
+  facet_grid(~ type) +
+  ylab("Local impacts by site") + xlab("") + 
+  labs("Effects") +
+  theme(legend.position = "none")
+# ggsave(filename = "./figures/impacts_site_od_2.pdf", width = 12, height = 6)
+```
+
+
+
+

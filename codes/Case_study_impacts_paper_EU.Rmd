@@ -1,0 +1,830 @@
+---
+title: '**R** codes for the case study of the paper *Computing and visualizing impacts
+  in the general spatial interaction model*'
+author: "Thibault Laurent & Paula Margaretic & Christine Thomas-Agnan"
+date: 'Last update: `r Sys.Date()`'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    code_folding: hide
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+    keep_tex: yes
+---
+
+```{r setup, include=FALSE}
+
+library(knitr)
+# ORIGINAL: knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_chunk$set(echo = TRUE,dev = c('pdf', 'png'), 
+        fig.align = 'center', fig.height = 5, fig.width = 8.5)
+
+#Determine the output format of the document
+outputFormat   = opts_knit$get("rmarkdown.pandoc.to")
+
+#Figure and Table Caption Numbering, for HTML do it manually
+capTabNo = 1; capFigNo = 1;
+
+#Function to add the Table Number
+capTab = function(x){
+  if(outputFormat == 'html'){
+    x = paste0("Table ",capTabNo,". ",x)
+    capTabNo <<- capTabNo + 1
+  }; x
+}
+
+#Function to add the Figure Number
+capFig = function(x){
+  if(outputFormat == 'html'){
+    x = paste0("Figure ",capFigNo,". ",x)
+    capFigNo <<- capFigNo + 1
+  }; x
+}
+```
+
+
+This document provides the **R** codes used to reproduce the new case study of the paper  *Computing and visualizing impacts in the general spatialinteraction model*. The new case study only considers European countries. The pdf version is available [here](index.pdf).
+
+The dataset is rectangular. It comprises 17 European countries: 13 of them act both as origins and destinations, 2 countries are only origins and 2 are only destinations.
+The countries are the following: Austria, Bulgaria,    Switzerland, Czech Republic, Germany, Spain, France, United Kingdom,   Hungary, Ireland, Italy, Netherlands, Norway,          Poland,Portugal, Romania,  Russia.  
+
+Packages needed:
+```{r, message = F, eval = F,echo=FALSE}
+install.packages(c(
+  "dplyr", # modify, select data
+  "gridExtra", # several ggplot
+  "ggalluvial", # spatial flows
+  "haven", # import stat files
+  "igraph", # library for network
+  "kableExtra", # table with Markdown
+  "lwgeom", "sf", "spdep", # spatial packages
+  "Matrix", # sparse matrix
+  "plyr", # modify object
+  "viridis", # data vizualisation
+  "hrbrthemes" # data vizualization
+  )) 
+devtools::install_github('rensa/ggflags')
+```
+
+
+```{r, message = F,echo=FALSE}
+library("viridis")
+library("hrbrthemes")
+library("gridExtra")
+library("ggflags")
+library("ggalluvial")
+library("kableExtra")
+library("tidyverse")
+library("sf")
+library("spdep")
+library("Matrix")  
+```
+
+# Treatment of the data
+
+## Import remittances data
+
+We import the remittances data:
+
+```{r, echo = F, eval = F}
+# my_dta <- haven::read_dta("./data/Remittances_v20200110.dta")
+
+my_dta <- haven::read_dta("./data/Remittances_v20200110.dta")
+
+# We subset the years of interest (2012 and 2017) and select the variables of interest:
+
+my_dta_1 <- my_dta %>%
+  filter(year == 2012 | year == 2017) %>%
+  select(1:4, 8, 12, 13, 15, 17:20, 27:31)
+
+# We set to 0 the NA values on remittances (it concerns 4 countries, in 2012):
+
+my_dta_1[which(is.na(my_dta_1$remit)), "remit"] <- 0
+
+# We identify countries that have not received money in 2012 or 2017:
+
+id_norec_2012_17 <- sort(unique(c(
+  my_dta_1 %>% 
+    filter(year == 2012) %>%
+    group_by(reccode2) %>% 
+    dplyr::summarise(remit_cum = sum(remit)) %>% 
+    filter(remit_cum == 0) %>% 
+    select(reccode2) %>%
+    pull(reccode2),
+  my_dta_1 %>% 
+    filter(year == 2017) %>%
+    group_by(reccode2) %>% 
+    dplyr::summarise(remit_cum = sum(remit)) %>% 
+    filter(remit_cum == 0) %>% 
+    select(reccode2) %>%
+    pull(reccode2)
+)))
+
+
+# We identify countries that have not sent money in 2012 or 2017:
+
+id_nosend_2012_17 <- sort(unique(c(
+  my_dta_1 %>% 
+    filter(year == 2012) %>%
+    group_by(sendcode2) %>% 
+    dplyr::summarise(remit_cum = sum(remit)) %>% 
+    filter(remit_cum == 0) %>% 
+    select(sendcode2) %>%
+    pull(sendcode2),
+  my_dta_1 %>% 
+    filter(year == 2017) %>%
+    group_by(sendcode2) %>% 
+    dplyr::summarise(remit_cum = sum(remit)) %>% 
+    filter(remit_cum == 0) %>% 
+    select(sendcode2) %>%
+    pull(sendcode2)
+)))
+
+
+# We create the list of European countries we will use in this case study
+codes<-unique(my_dta_1[,c(1,4,7)])
+
+list_O<-c("AT","CZ","FR","DE","HU","IE","IT","NL","NO","PT","RO","RU","ES","CH","GB")
+list_D<-c("AT","BG","CZ","FR","DE","HU","IT","NL","PL","PT","RO","RU","ES","CH","GB")
+
+my_dta_2 <- my_dta_1 %>%  
+  filter(reccode2 %in% list_D,
+         sendcode2 %in% list_O)
+
+
+## Explanatory variables 
+
+# We import the explanatory variables: 
+
+varexp <- haven::read_dta("./data/varexplicativas_v20201029.dta")
+varexp1 <- varexp %>%
+  filter(year == 2010 | year == 2015) %>%
+  select(1, 3, 39, 2, 4:9, 14:16, 18:29, 35, 40, 90:91, 93:94,
+        95:98, 107, 110, 111, 112:115, 117, 118, 121, 123:125, 128)
+
+# We give name variables to the last variables chosen:
+colnames(varexp1)[c(43:49)]<-c("new_bus", "new_bus_1000", "unemployment_percent",
+                               "GDP_growth", "HDI", "HDI_wpcInc", "compensat_USD")
+varexp1[,c(43:46)] <- sapply(varexp1[,c(43:46)], as.numeric)
+summary(varexp1)
+
+# We Merge electricity use data with varexp1
+
+elect_2016 <- subset(varexp, varexp$year == 2016, select = c(3, 126:127))
+varexp1 <- merge(varexp1, elect_2016, by.x = "CountryCode",
+                      by.y = "CountryCode", all.x = T, all.y = T)
+colnames(varexp1)[50:51] <- c("Electricity_use", "Electricity_use_pc")
+
+
+# We keep the info of the European countries
+id_countries<-union(list_D,list_O)
+id_countries_3<-data.frame(codes[codes$sendcode2 %in% id_countries,1])$countrycode1
+varexp2 <- varexp1[varexp1$CountryCode %in% id_countries_3, ]
+varexp2 <- varexp2[ , -c(11:13)]
+
+# We instrument the transfer cost (as proxied by the fee of a 200 USD transfer made with Western Union, hereafter WU) using the financial development index of the country (variable FD) and whether the country is under a dollarization regime (variable dollarization):
+
+dol_FD_2013 <- subset(varexp, varexp$year == 2013, select = c(3, 39, 40, 97))
+dol_FD_2013_1 <- dol_FD_2013[dol_FD_2013$CountryCode %in% id_countries_3, ]
+WU_2015 <- subset(varexp, varexp$year == 2015, select = c(3, 39, 4))
+WU_2015_1 <- WU_2015[WU_2015$CountryCode %in% id_countries_3, ]
+data_WU_inst <- merge(WU_2015_1, dol_FD_2013_1, by.x = "CountryCode",
+                      by.y = "CountryCode", all.x = T, all.y = T)
+reg_WU_inst <- lm(westunion ~ FD + dollarization, data = data_WU_inst)
+data_WU_inst$WU_pred <- predict(reg_WU_inst)
+data_WU_inst$WU_res <- residuals(reg_WU_inst)
+
+## Spatial data
+
+# We import the contours of the countries:
+
+world <- sf::st_read("./data/World WGS84/Pays_WGS84.shp")
+
+# We have to add Hong-Kong in the spatial data (as there was an issue in the data). 
+
+library("sf")
+
+## Focus on 2017
+
+# We subset year 2017. We first merge the "remittances" and the "explanatory variables" datasets for this year. The explanatory variables are lagged two years, thus corresponding to year 2015:
+
+
+my_dta_5 <- merge(my_dta_2[which(my_dta_2$year == "2017"), ],
+                  varexp2[which(varexp2$year == "2015"), ],
+                  by.x = "countrycode1", by.y = "CountryCode",
+                  all.x = T)
+
+# We change the names of some explanatory variables:
+
+names_var <- c("deflactor", "WU", "controls", "dualFX", "multFX", "restrictions", 
+               "migration",  "ocurEarthq", "totafEarthq", "totdamEarthq", "dumEarthq",
+               "ocurFlood", "totafFlood", "totdamFlood", "dumFlood", "ocurStorm", "totafStorm", 
+               "totdamStorm", "dumStorm",     "GDP_PPP", "FD", 
+               "island", "landlocked", "GDP", "population", "GDPconstant", "region", "dollarization", 
+               "offdevelopment", "polstab", "FXavg","FXsd", "GDP_percapita_UN", "GDP_UN", "GDPconstant_UN",
+               "deflactor_UN", "new_bus" ,"new_bus_1000" , "unemployment_percent", "GDP_growth",
+               "HDI", "HDI_wpcInc", "compensat_USD", "Electricity_use", "Electricity_use_pc")
+colnames(my_dta_5)[20:64] <- paste0("send_", names_var) 
+
+# We add the WU variable which was created independently:
+
+data5_bis <- merge(my_dta_5, data_WU_inst, by.x = "countrycode1", 
+                   by.y = "CountryCode", all.x = T)
+data5_bis <- data5_bis[ , -c(65:69)]
+colnames(data5_bis)[c(65:66)] <- c("send_WU_pred", "send_WU_resid")
+
+# We now add the control variables for the countries at origin and change the names:
+
+data5_bis2 <- merge(data5_bis, varexp2[which(varexp2$year == "2015"),], 
+                    by.x = "countrycode2", by.y = "CountryCode", all.x = T)
+colnames(data5_bis2)[c(69:113)] <- paste0("rec_", names_var) 
+data5_bis2 <- data5_bis2[, -c(18, 19, 67, 68)]
+
+# We first identify and eliminate those countries which have too few remittances. Specifically, we consider the year 2017 and search which countries have zero remittances with at least 110 counterparts. We then eliminate them. Also, we eliminate the zero  (off-diagonal) flows.
+
+my_dta_6 <- data5_bis2
+my_dta_6 <- my_dta_6[order(my_dta_6$send_ct, my_dta_6$rec_ct),]
+
+# my_dta_6$zero_fl <- F
+# my_dta_6$zero_fl[which(my_dta_6$remit == 0)] <- T
+# 
+# id_orig_remit_zero <- my_dta_6 %>% 
+#   filter(zero_fl) %>%
+#   group_by(sendcode2) %>% 
+#   summarise(zero_cum = n()) %>%
+#   filter(zero_cum > 110) %>%
+#   select(sendcode2) %>%
+#   pull(sendcode2)
+# 
+# id_dest_remit_zero <- my_dta_6 %>% 
+#   filter(zero_fl) %>%
+#   group_by(reccode2) %>% 
+#   summarise(zero_cum = n()) %>%
+#   filter(zero_cum > 110) %>%
+#   select(reccode2) %>%
+#   pull(reccode2)
+# 
+# # Eliminate those countries without enough remittances data 
+# 
+# my_dta_6 <- my_dta_6[!my_dta_6$sendcode2 %in% id_orig_remit_zero,]
+# my_dta_6 <- my_dta_6[!my_dta_6$reccode2 %in% id_dest_remit_zero,]
+# 
+
+## Computing the distances 
+
+# The distances between flows can be presented in a matrix of size $n_d \times n_o$. We use the function *gDistance()* from package **rgeos** (Bivand and Rundel, 2019).
+
+id_send_ct <- sort(unique(my_dta_6$send_ct))
+id_rec_ct <- sort(unique(my_dta_6$rec_ct))
+
+# Create a dataframe with the country names and their ISO country codes (2 digits). Add the ISO codes to the geometry object to be able later to sort
+
+id_send_ct_nam_iso <- unique(data.frame(my_dta_6$send_ct,my_dta_6$sendcode2))
+colnames(id_send_ct_nam_iso) <- c("send_ct", "sendcode2")
+id_send_ct_nam_iso <- id_send_ct_nam_iso[order(id_send_ct_nam_iso$sendcode2),]
+
+id_rec_ct_nam_iso <- unique(data.frame(my_dta_6$rec_ct, my_dta_6$reccode2))
+colnames(id_rec_ct_nam_iso) <- c("rec_ct", "reccode2")
+id_rec_ct_nam_iso <- id_rec_ct_nam_iso[order(id_rec_ct_nam_iso$reccode2),]
+
+# Create the geometry object and add the ISO codes 
+
+geom_send_ct0 <- world[world$NOM %in% id_send_ct, ]
+geom_send_ct <- merge(geom_send_ct0, id_send_ct_nam_iso, 
+                      by.x = "NOM", by.y = "send_ct", all.x = TRUE)
+row.names(geom_send_ct) <- geom_send_ct$sendcode2
+geom_send_ct <- geom_send_ct[order(geom_send_ct$sendcode2), ]
+
+geom_rec_ct0 <- world[world$NOM %in% id_rec_ct, ]
+geom_rec_ct <- merge(geom_rec_ct0, id_rec_ct_nam_iso, 
+                     by.x = "NOM", by.y = "rec_ct", all.x = TRUE)
+row.names(geom_rec_ct) <- geom_rec_ct$reccode2
+geom_rec_ct <- geom_rec_ct[order(geom_rec_ct$reccode2), ]
+
+
+library(lwgeom)
+G_mig <- t(as(st_distance(st_centroid(geom_send_ct), 
+                          st_centroid(geom_rec_ct)), "matrix"))
+
+# It can also be  added to the data.frame which presents the data in vectorized form
+
+row.names(G_mig) <- row.names(geom_rec_ct)
+colnames(G_mig) <- row.names(geom_send_ct)
+
+
+## Construct the spatial weight matrices 
+
+# To define the spatial weight matrix on our geographical sites, we use the 3-nearest neighbours properties for origins and destinations. To store the $R$ explanatory variables in a matrix of size $N\times R$, the user has to use Kronecker products separately for origins and for destinations: 
+
+n_rem_o <- length(unique(my_dta_6$sendcode2))
+n_rem_d <- length(unique(my_dta_6$reccode2))
+n_rem_o * n_rem_d == nrow(my_dta_6)
+
+### Matrix Wo
+
+# First, we build the spatial weight matrix on the countries which are observed at the origin. The matrix is based on the 3-nearest neighbors. 
+
+library("spdep")
+w_rem_o_nb <- knn2nb(knearneigh(as(st_centroid(geom_send_ct), "Spatial"), k = 3))
+w_rem_o <- listw2mat(nb2listw(w_rem_o_nb))
+
+# We also compute a matrix of distances between observations at origin (we will use it later to correct some neighbours).
+
+w_rem_o_dist <- t(as(st_distance(st_centroid(geom_send_ct), 
+                                 st_centroid(geom_send_ct)), "matrix"))
+row.names(w_rem_o_dist) <- row.names(w_rem_o) <- row.names(geom_send_ct)
+colnames(w_rem_o_dist) <- colnames(w_rem_o) <- row.names(geom_send_ct)
+
+# To build the spatial weight matrices $W_o$, we use Kronecker products. 
+
+library("Matrix")
+W_rem_o <- kronecker(w_rem_o, Diagonal(n_rem_d))
+W_rem_o_dist <- kronecker(w_rem_o_dist, Diagonal(n_rem_d))
+W_rem_o_list <- mat2listw(W_rem_o, style = "W")
+row.names(W_rem_o) <- row.names(W_rem_o_dist) <- 
+  paste(rep(id_send_ct_nam_iso$sendcode2, each = n_rem_d), 
+        rep(id_rec_ct_nam_iso$reccode2, n_rem_o), sep = " ")
+colnames(W_rem_o) <-colnames(W_rem_o_dist) <- 
+  paste(rep(id_send_ct_nam_iso$sendcode2, each = n_rem_d), 
+        rep(id_rec_ct_nam_iso$reccode2, n_rem_o), sep = " ")
+
+# We take the neighbours (still a list)
+lwo_neighb <- W_rem_o_list$neighbours
+
+
+### Matrix Wd
+
+# We build the spatial weight matrix on the countries which are observed at the destination. The matrix is based on the 3-nearest neighbors. 
+
+w_rem_d_nb <- knn2nb(knearneigh(as(st_centroid(geom_rec_ct), "Spatial"), k = 3))
+w_rem_d <- listw2mat(nb2listw(w_rem_d_nb))
+
+# We compute the distance matrix:
+
+w_rem_d_dist <- t(as(st_distance(st_centroid(geom_rec_ct),
+                                 st_centroid(geom_rec_ct)), "matrix"))
+row.names(w_rem_d_dist) <- row.names(w_rem_d) <- row.names(geom_rec_ct)
+colnames(w_rem_d_dist) <- colnames(w_rem_d) <- row.names(geom_rec_ct)
+
+# Finally, we use Kronecker product to build $W_d$:
+
+W_rem_d <- kronecker(Diagonal(n_rem_o), w_rem_d)
+W_rem_d_dist <- kronecker(Diagonal(n_rem_o), w_rem_d_dist)
+W_rem_d_list <- mat2listw(W_rem_d, style = "W")
+row.names(W_rem_d) <- row.names(W_rem_d_dist) <- 
+  paste(rep(id_send_ct_nam_iso$sendcode2, each = n_rem_d), 
+        rep(id_rec_ct_nam_iso$reccode2, n_rem_o), 
+        sep = " ")
+colnames(W_rem_d) <-colnames(W_rem_d_dist) <- 
+  paste(rep(id_send_ct_nam_iso$sendcode2, each=n_rem_d), 
+        rep(id_rec_ct_nam_iso$reccode2, n_rem_o), sep=" ")
+
+# We take the neighbours (still a list)
+lwd_neighb <- W_rem_d_list$neighbours
+
+### Matrix Ww
+
+# We build $W_w$ thanks to $W_o$ and $W_d$
+
+W_rem_w <- W_rem_o %*% W_rem_d
+W_rem_w_list <- mat2listw(W_rem_w, style = "W")
+lww_neighb <- W_rem_w_list$neighbours
+
+
+## Transform the explanatory variables to origin-destination format 
+
+# We order the data basis:
+
+my_dta_6 <- my_dta_6[order(my_dta_6$sendcode2, my_dta_6$reccode2),]
+rownames(my_dta_6) <- seq(1:nrow(my_dta_6))
+my_dta_6$rec_GDP_PPP <- as.numeric(as.character(my_dta_6$rec_GDP_PPP))
+my_dta_6$send_GDP_PPP <- as.numeric(as.character(my_dta_6$send_GDP_PPP))
+
+# We create some additional variables which are dummies:
+
+my_dta_6$rec_dum_nat_dis <- 0
+my_dta_6$rec_dum_nat_dis[which(my_dta_6$rec_dumEarthq == 1 | 
+                                 my_dta_6$rec_dumStorm == 1)] <- 1
+my_dta_6$send_cont_mulFX <- 0
+my_dta_6$send_cont_mulFX[which(my_dta_6$send_controls == 1 | 
+                                 my_dta_6$send_dualFX == 1 | 
+                                 my_dta_6$send_multFX == 1)] <- 1
+my_dta_6$rec_cont_mulFX <- 0
+my_dta_6$rec_cont_mulFX[which(my_dta_6$rec_controls == 1 | 
+                                my_dta_6$rec_dualFX == 1 | 
+                                my_dta_6$rec_multFX == 1)] <- 1
+my_dta_6$same_region <- 0
+my_dta_6$same_region[which(my_dta_6$rec_region == my_dta_6$send_region)] <- 1
+
+# We separate the explanatory variables at Origin:
+X_o <- as.matrix(my_dta_6 %>% 
+                   select(send_GDPconstant_UN, send_population, send_FD, send_deflactor_UN,
+                          send_island, send_landlocked, contig,comlang_off, comcur, colony,
+                          same_region, send_controls, send_dualFX, send_multFX, send_cont_mulFX,
+                          send_migration,  send_FXavg, send_FXsd,
+                          send_polstab, send_dollarization, send_WU_pred, send_WU_resid,
+                          send_new_bus_1000, send_new_bus,
+                          send_GDP_growth, send_HDI_wpcInc, send_unemployment_percent,
+                          send_Electricity_use, send_Electricity_use_pc))
+rownames(X_o) <- my_dta_6$sendcode2
+
+# We separate the explanatory variables at Destination:
+
+X_d <- as.matrix(my_dta_6 %>% 
+                   dplyr::select(rec_GDPconstant_UN, rec_population, rec_FD, rec_deflactor_UN, rec_island, 
+                                 rec_landlocked, rec_controls, rec_dualFX, rec_multFX, rec_cont_mulFX, 
+                                 rec_migration, rec_FXavg, rec_FXsd, rec_ocurEarthq,
+                                 rec_totafEarthq, rec_totdamEarthq, rec_dumEarthq, 
+                                 rec_ocurFlood, rec_totafFlood, rec_totdamFlood, rec_dumFlood, rec_ocurStorm,
+                                 rec_totafStorm, rec_totdamStorm, rec_dumStorm,
+                                 rec_dum_nat_dis, rec_polstab, rec_dollarization,
+                                 rec_new_bus_1000, rec_new_bus,
+                                 rec_GDP_growth, rec_HDI_wpcInc, rec_unemployment_percent,
+                                 rec_Electricity_use, rec_Electricity_use_pc))
+
+# We include the $X_o$ and $X_d$ with the names of origin and destination in the final data basis:
+
+flows_rem <- data.frame(origin = rep(unique(my_dta_6$sendcode2), each = n_rem_d),
+                        dest = rep(unique(my_dta_6$reccode2), n_rem_o),
+                        X_o, X_d)
+
+# We convert into log some variables and change the names:
+
+flows_rem_log <- as.data.frame(lapply(flows_rem[, c(4, 25:26, 30, 33, 60:61, 65)], 
+                                      function(x) log(x)))
+colnames(flows_rem_log) <- c("log_sendpop", "log_send_new_bus_1000", "log_send_new_bus", "log_send_elect_use",
+                             "log_rec_pop", "log_rec_new_bus_1000",
+                             "log_rec_new_bus", "log_rec_Electricity_use")
+flows_rem <- cbind(flows_rem, flows_rem_log)
+
+# We transform the matrix of distances in a vector and we add it in the data:
+
+flows_rem$g <- as.vector(G_mig)
+
+# We add the dependent variable and create the logarithms:
+
+flows_rem$y <- my_dta_6$remit
+flows_rem$logy <- log(flows_rem$y)
+flows_rem$logg <- log(flows_rem$g)
+
+# We add two explanatory variables to the dataset:
+flows_rem$log_send_gdp_pop <- log(flows_rem$send_GDPconstant_UN / 
+                                    flows_rem$send_population)
+flows_rem$log_rec_gdp_pop <- log(flows_rem$rec_GDPconstant_UN / 
+                                   flows_rem$rec_population)
+
+# We give an unique name for each flow:
+flows_rem$ct_p <- paste(flows_rem$origin, flows_rem$dest, sep = " ")
+row.names(flows_rem) <- flows_rem$ct_p
+
+
+## Eliminate the zero flows 
+
+# In short, we identify the zero flows and we then eliminate them
+
+# 1) Identify the row numbers of the zero  flows 
+id_zero_fl <- which(flows_rem$y == 0)
+flows_rem.red <- flows_rem[-id_zero_fl, ]
+
+# 2) Procedure for elimination of the zero flows 
+# 
+# * Eliminate them from the **listw**. Do the subset
+
+lwo_neighb_red <- subset(lwo_neighb, !(1:length(lwo_neighb) %in% id_zero_fl))
+attr(lwo_neighb_red, "country.id") <- seq(1:length(lwo_neighb_red))
+
+lwd_neighb_red <- subset(lwd_neighb, !(1:length(lwd_neighb) %in% id_zero_fl))
+attr(lwo_neighb_red, "country.id") <- seq(1:length(lwo_neighb_red))
+
+lww_neighb_red <- subset(lww_neighb, !(1:length(lww_neighb) %in% id_zero_fl))
+attr(lww_neighb_red, "country.id") <- seq(1:length(lww_neighb_red))
+
+
+# We convert the **nb** list to matrix,  convert the **matrix** to  **list** and eliminate the matrix. Problem : some flows do not have neighbours.
+# 
+# * For $W_o$
+
+LWo_3_red <- nb2mat(lwo_neighb_red, glist = NULL, style = "W", zero.policy = TRUE)
+lwo_3_red <- mat2listw(LWo_3_red, style = "W")
+LWo_3_red <- NULL
+
+# We use a sparse **Matrix** object:
+
+W_o_3_red <- as(as_dgRMatrix_listw(lwo_3_red), "CsparseMatrix")
+row.names(W_o_3_red) <- colnames(W_o_3_red) <- row.names(flows_rem.red)
+
+# We also drop the 0 from the distance matrix:
+
+W_o_3_dist_red <- W_rem_o_dist[-id_zero_fl, -id_zero_fl]
+row.names(W_o_3_dist_red) <- colnames(W_o_3_dist_red) <- row.names(flows_rem.red)
+
+
+# * We do the same thing for $W_d$:
+
+LWd_3_red <- nb2mat(lwd_neighb_red, glist = NULL, style = "W", zero.policy = TRUE)
+lwd_3_red <- mat2listw(LWd_3_red,style = "W")
+LWd_3_red <- NULL
+W_d_3_red <- as(as_dgRMatrix_listw(lwd_3_red), "CsparseMatrix")
+row.names(W_d_3_red) <- colnames(W_d_3_red) <- row.names(flows_rem.red)
+W_d_3_dist_red <- W_rem_d_dist[-id_zero_fl, -id_zero_fl]
+row.names(W_d_3_dist_red) <- colnames(W_d_3_dist_red) <- row.names(flows_rem.red)
+
+# * We do the same thing for $W_w$:
+
+LWw_3_red <- nb2mat(lww_neighb_red, glist = NULL, style = "W", zero.policy = TRUE)
+lww_3_red <- mat2listw(LWw_3_red,style="W")
+LWw_3_red <- NULL
+
+##  Deal with the zero flows and those without neighbours after the subsetting 
+
+# We use code "Zero_flows_W_red_threshold_neut.R" to get the new weight matrices **W** (including distance thresholds and subset of flows with no nb)
+
+source("./codes/Zero_flows_W_red_threshold_neut.R")
+
+
+# Lagged explanatory variables in 2017
+
+Wo.dgT_o <- Wo.dgT_o / apply(Wo.dgT_o, 1, sum)
+Wd.dgT_d <- Wd.dgT_d / apply(Wd.dgT_d, 1, sum)
+
+
+# We create dummy variables for high, medium and low inflation regimes, with the thresholds based on the 10 and 90% percentiles of the distribution 
+
+# * Inflation regime for sending countries. In the European case, we consider high or low
+quantile(flows_rem.red$send_deflactor_UN, probs = c(0.10, 0.5,0.75, 0.9))
+flows_rem.red$send_high_inf <- 0
+flows_rem.red$send_high_inf[which(flows_rem.red$send_deflactor_UN >= 2.46)] <- 1
+
+# flows_rem.red$send_med_inf <- 0
+# flows_rem.red$send_med_inf[which(flows_rem.red$send_deflactor_UN < 7.6 & flows_rem.red$send_deflactor_UN >= -0.6)] <- 1
+
+# * Inflation regime for receiving countries
+
+quantile(flows_rem.red$rec_deflactor_UN, probs = c(0.10, 0.5,0.75, 0.9))
+flows_rem.red$rec_high_inf <- 0
+flows_rem.red$rec_high_inf[which(flows_rem.red$rec_deflactor_UN >= 2.45)] <- 1
+
+# flows_rem.red$rec_med_inf <- 0
+# flows_rem.red$rec_med_inf[which(flows_rem.red$rec_deflactor_UN < 2.6 & flows_rem.red$rec_deflactor_UN >= 0.6)] <- 1
+
+
+save(flows_rem.red, geom_send_ct, geom_rec_ct, flow.no.neigh.o, 
+     flow.no.neigh.d, Wd.dgT_d, Wo.dgT_o, file = "my_data.RData")
+```
+
+```{r}
+# Load the data again
+ load(file = "my_data.RData")
+```
+
+# Data management
+
+We add some variables and we create the geometries of the unique countries:
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+geom_send_ct <- geom_send_ct %>%
+  mutate(code = sendcode2)
+geom_rec_ct <- geom_rec_ct %>%
+  mutate(code = reccode2)
+sf_rem_o_d <- rbind(
+  geom_send_ct[, c("NOM", "code")],
+  geom_rec_ct[!geom_rec_ct$NOM %in% geom_send_ct$NOM, c("NOM", "code")])
+
+
+```
+
+
+
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+# We drop the flows which do not have (close) neighbours:
+
+# We compute the log and the spatial lag of some explanatory vriables:
+flows_rem.red$log_send_electricity_use_pc <- log(flows_rem.red$send_Electricity_use_pc)
+flows_rem.red$log_rec_electricity_use_pc <- log(flows_rem.red$rec_Electricity_use_pc)
+
+# creating the spatial lagged variables  
+flows_rem.red$lagged_log_rec_electricity_use_pc <- flows_rem.red$lagged_rec_electricity_use_pc <-  flows_rem.red$lagged_log_rec_pop <- 
+flows_rem.red$lagged_rec_pop <- flows_rem.red$lagged_log_send_electricity_use_pc <- flows_rem.red$lagged_send_electricity_use_pc <- flows_rem.red$lagged_log_send_pop <- flows_rem.red$lagged_send_pop <- NA
+
+flows_rem.red[!flows_rem.red$flow.no.neigh.od, c("lagged_log_rec_electricity_use_pc","lagged_rec_electricity_use_pc", "lagged_log_rec_pop", "lagged_rec_pop")] <-
+  Wd.dgT_d%*%as.matrix(flows_rem.red[!flows_rem.red$flow.no.neigh.od, c("log_rec_electricity_use_pc","rec_Electricity_use_pc","log_rec_pop", "rec_population")] )
+
+flows_rem.red[!flows_rem.red$flow.no.neigh.od, c("lagged_log_send_electricity_use_pc","lagged_send_electricity_use_pc","lagged_log_send_pop", "lagged_send_pop")] <-
+  Wo.dgT_o%*%as.matrix(flows_rem.red[!flows_rem.red$flow.no.neigh.od, c("log_send_electricity_use_pc","send_Electricity_use_pc","log_sendpop", "send_population")] )
+
+flows_rem.red <- flows_rem.red[!flows_rem.red$flow.no.neigh.od, ]
+
+library("spdep")
+w_rem_o_nb <- knn2nb(knearneigh(as(st_centroid(geom_send_ct), "Spatial"), k = 3))
+w_rem_o <- listw2mat(nb2listw(w_rem_o_nb))
+
+row.names(w_rem_o) <- row.names(geom_send_ct)
+colnames(w_rem_o) <- row.names(geom_send_ct)
+
+### Wd
+
+w_rem_d_nb <- knn2nb(knearneigh(as(st_centroid(geom_rec_ct), "Spatial"), k = 3))
+w_rem_d <- listw2mat(nb2listw(w_rem_d_nb))
+
+# ADDED
+row.names(w_rem_d) <- row.names(geom_rec_ct)
+colnames(w_rem_d) <- row.names(geom_rec_ct)
+# END OF ADDED
+
+```
+
+
+# Modeling
+
+```{r}
+# We need to load internal function for the estimation of the Spatial SDM flows models:
+
+source("ftrace1.R")
+source("sar_flow_2.R")
+```
+
+
+## Specification 1
+
+```{r}
+# prepare the variables we need
+OX_remit <-  data.frame(unique(flows_rem.red[, c("origin", "log_send_electricity_use_pc", "log_sendpop", "send_island", 
+"send_high_inf", "send_cont_mulFX", "send_FXsd", "send_WU_resid")]), row.names = "origin")
+names(OX_remit) <- c("log_electricity_use_pc", "log_pop", "island", "high_inf", "cont_mulFX", "FXsd", "WU_resid")
+
+DX_remit <- data.frame(unique(flows_rem.red[, c("dest", "log_rec_electricity_use_pc", "log_rec_pop", "rec_high_inf", "rec_polstab", "rec_landlocked", "rec_dum_nat_dis")]), row.names = "dest") 
+names(DX_remit) <- c("log_electricity_use_pc", "log_pop", "high_inf", "polstab", "landlocked", "dum_nat_dis")
+
+pairs_OD <- flows_rem.red[, c("contig", "comlang_off", "comcur", "colony", "logg")]
+y_od <- flows_rem.red[, c("origin", "dest", "logy")]
+
+W_o_remit <- Wo.dgT_o
+W_d_remit <- Wd.dgT_d
+save(OX_remit, DX_remit, pairs_OD, y_od, W_o_remit, W_d_remit, file = "my_remit.RData")
+```
+
+
+### Ordinary Least Squares
+
+```{r,echo=FALSE}
+# + send_med_inf + rec_med_inf
+
+formula_lm_sdm <- as.formula("logy ~  log_send_electricity_use_pc + log_sendpop + 
+   send_island + send_high_inf  + send_cont_mulFX + send_FXsd + 
+   send_WU_resid + lagged_log_send_electricity_use_pc + 
+   log_rec_electricity_use_pc + log_rec_pop + 
+   rec_high_inf  + rec_polstab + rec_landlocked + rec_dum_nat_dis + lagged_log_rec_electricity_use_pc +
+   contig + 
+   comlang_off + comcur + colony + logg")
+
+
+fito <- lm(formula_lm_sdm, data = flows_rem.red)
+S <- summary(fito)
+# We print the results:
+# S
+# We store the results for exporting later to LaTeX:
+lm_res <- rbind(c("", ""), c("", ""), round(cbind(S$coefficients[1:20 ,1], 
+                                                  S[["coefficients"]][1:20, "t value"]), digits = 3),
+              round(cbind(S$coefficients[21, 1], S[["coefficients"]][21, "t value"]), digits = 3))
+row.names(lm_res) <- NULL
+```
+
+## Bayesian model
+
+
+### With $W_d$
+
+```{r, eval = T,echo=FALSE,include=FALSE}
+# Formula SDM
+system.time(sdm_bay_Wd_2017_13 <- 
+              sar_flow_2(x = flows_rem.red[, 
+               c("log_send_electricity_use_pc", "log_sendpop", "send_island",
+                 "send_high_inf",   
+                 "send_cont_mulFX", "send_FXsd",  "send_WU_resid","lagged_log_send_electricity_use_pc", 
+                 "log_rec_electricity_use_pc", "log_rec_pop",
+                 "rec_high_inf", "rec_polstab","rec_landlocked",
+                 "rec_dum_nat_dis", "lagged_log_rec_electricity_use_pc",
+                 "contig", "comlang_off", "comcur", "colony")], 
+    y = flows_rem.red$logy, 
+    g = flows_rem.red$logg, 
+    W_d = Wd.dgT_d,  
+    model = "model_2"))
+
+
+### With $W_o$
+system.time(sdm_bay_Wo_2017_13 <- 
+              sar_flow_2(x = flows_rem.red[ , 
+             c("log_send_electricity_use_pc", "log_sendpop", "send_island",
+                 "send_high_inf",   
+                 "send_cont_mulFX", "send_FXsd",  "send_WU_resid","lagged_log_send_electricity_use_pc", 
+                 "log_rec_electricity_use_pc", "log_rec_pop",
+                 "rec_high_inf","rec_polstab","rec_landlocked",
+                 "rec_dum_nat_dis", "lagged_log_rec_electricity_use_pc",
+                 "contig", "comlang_off", "comcur", "colony")],
+  y = flows_rem.red$logy, 
+  g = flows_rem.red$logg, 
+  W_o = Wo.dgT_o,  
+  model = "model_3"))
+
+ 
+### With $W_o$ and $W_d$
+
+system.time(sdm_bay_Wod_2017_13 <- sar_flow_2(
+  x = flows_rem.red[!flows_rem.red$flow.no.neigh.od, 
+           c("log_send_electricity_use_pc", "log_sendpop", "send_island",
+                 "send_high_inf",   
+                 "send_cont_mulFX", "send_FXsd",  "send_WU_resid","lagged_log_send_electricity_use_pc", 
+                 "log_rec_electricity_use_pc", "log_rec_pop",
+                 "rec_high_inf","rec_polstab","rec_landlocked",
+                 "rec_dum_nat_dis", "lagged_log_rec_electricity_use_pc",
+                 "contig", "comlang_off", "comcur", "colony")],
+  y = flows_rem.red$logy[!flows_rem.red$flow.no.neigh.od], 
+  g = flows_rem.red$logg[!flows_rem.red$flow.no.neigh.od], 
+  W_o = Wo.dgT_o, W_d = Wd.dgT_d,  
+  model = "model_7"))
+
+# We print the results:
+
+sdm_bay_Wd_2017_b_sum <- summary_bayesian_sar_flow(sdm_bay_Wd_2017_13)
+ndraw <- length(sdm_bay_Wd_2017_13$psave)
+sdm_bay_Wo_2017_b_sum <- summary_bayesian_sar_flow(sdm_bay_Wo_2017_13)
+sdm_bay_Wod_2017_b_sum <- summary_bayesian_sar_flow(sdm_bay_Wod_2017_13)
+
+N <- nrow(flows_rem.red[!flows_rem.red$flow.no.neigh.od, ])
+require("ggridges")
+
+# Table short
+
+
+```
+
+## Print the results: complete results
+
+```{r,echo=FALSE}
+
+# var_names <- c("Spat par O", "Spat par D", "Intercept", "Log Electric Use PC O", 
+#                  "Log Pop O", "Island O", "High Inf O",  "Multiple FX O", 
+#                  "FX Vol O", "Transfer Cost O", "Lagged Log Electric Use PC O",
+#                 "Log Electric Use PC D", "Log Pop D", 
+#                  "High Inf D",  "Pol Stab D", "Landlocked D", "Natural Disaster D",
+#                "Lagged Log Electric Use PC D",
+#                "Com Border", "Com Language", "Com Currency", "Colony", "Distance")
+
+var_names <- c("Spatial parameter O", "Spatial parameter D", "Intercept", "Log(Electric Use PC O)", 
+                 "Log(Population O)", "Island O", "High Inflation O",  "Multiple Foreign Exchanges O", 
+                 "Foreign Exchange Volatility O", "Transfer Cost O", "Lagged Log(Electric Use PC O)",
+                "Log(Electric Use PC D)", "Log(Population D)", 
+                 "High Inflation D",  "Political Stability D", "Landlocked D", "Natural Disaster D",
+               "Lagged Log(Electric Use PC D)",
+               "Common Border", "Common Language", "Common Currency", "Colony", "Distance")
+sdm_bay_Wo_2017_b_sum <- rbind(sdm_bay_Wo_2017_b_sum[1, ],
+                             c("", "", "", ""), sdm_bay_Wo_2017_b_sum[-1, ])
+sdm_bay_Wd_2017_b_sum <- rbind(c("", "", "", ""), sdm_bay_Wd_2017_b_sum)
+nrow(sdm_bay_Wd_2017_b_sum)
+
+
+result_fin_2017_13 <- data.frame(cbind(var_names, lm_res[, 1], lm_res[, 2],
+                                    as.numeric(round(as.numeric(sdm_bay_Wo_2017_b_sum[, 1]), 
+                                                     digits = 3)),
+                                    as.numeric(round(as.numeric(sdm_bay_Wo_2017_b_sum[, 4]), 
+                                                     digits = 3)),
+                                    as.numeric(round(as.numeric(sdm_bay_Wd_2017_b_sum[, 1]), 
+                                                     digits = 3)),
+                                    as.numeric(round(as.numeric(sdm_bay_Wd_2017_b_sum[, 4]), 
+                                                     digits = 3)),
+                                    as.numeric(round(as.numeric(sdm_bay_Wod_2017_b_sum[, 1]), 
+                                                     digits = 3)),
+                                    as.numeric(round(as.numeric(sdm_bay_Wod_2017_b_sum[, 4]), 
+                                                     digits = 3))))
+names(result_fin_2017_13) <- c("Variables", "OLM", "T-stat", "Est Wo", "T-stat", "Est Wd", "T-stat",
+                               "Wo Wd", "T-stat")
+rownames(result_fin_2017_13)<-NULL
+
+knitr::kable(result_fin_2017_13)
+
+```
+
+## Short version to be presented in the paper
+
+```{r,echo=FALSE}
+
+## Print the results
+result_fin_2017_short <- data.frame(cbind(var_names, lm_res[, 1], lm_res[, 2],
+                                    as.numeric(round(as.numeric(sdm_bay_Wod_2017_b_sum[, 1]), 
+                                                     digits = 3)),
+                                    as.numeric(round(as.numeric(sdm_bay_Wod_2017_b_sum[, 4]), 
+                                                     digits = 3))))
+
+names(result_fin_2017_short) <- c("Variables", "OLM", "T-stat", 
+                               "Wo Wd", "T-stat")
+rownames(result_fin_2017_short)<-NULL
+
+# Table short
+knitr::kable(result_fin_2017_short)
+```
+
+
